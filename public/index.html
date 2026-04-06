@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>D7 Lead Bot</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3350;
+      --text: #e2e8f0;
+      --muted: #8892a4;
+      --accent: #6366f1;
+      --accent-hover: #818cf8;
+      --green: #22c55e;
+      --yellow: #eab308;
+      --red: #ef4444;
+      --blue: #3b82f6;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+    header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+    header h1 { font-size: 20px; font-weight: 700; color: var(--accent); }
+    #account-badge { font-size: 13px; color: var(--muted); display: flex; gap: 16px; }
+    #account-badge span { color: var(--text); font-weight: 600; }
+
+    .layout { display: grid; grid-template-columns: 360px 1fr; gap: 0; height: calc(100vh - 57px); overflow: hidden; }
+
+    /* ── Left panel ── */
+    .panel-left { background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+    .panel-section { padding: 20px; border-bottom: 1px solid var(--border); }
+    .panel-section h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 14px; }
+
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 5px; }
+    textarea, input[type=text], select {
+      width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+      border-radius: 6px; padding: 8px 10px; font-size: 14px; resize: vertical; outline: none;
+      transition: border-color .15s;
+    }
+    textarea:focus, input[type=text]:focus, select:focus { border-color: var(--accent); }
+    textarea { min-height: 72px; }
+
+    .form-group { margin-bottom: 14px; }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+    .btn { display: inline-flex; align-items: center; gap: 6px; padding: 9px 18px; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; font-weight: 600; transition: background .15s; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-ghost { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+    .btn-ghost:hover { color: var(--text); border-color: var(--muted); }
+    .btn-sm { padding: 5px 12px; font-size: 12px; }
+
+    .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    /* ── Job list ── */
+    .job-list { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+    .job-card {
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+      font-size: 13px; cursor: pointer; transition: border-color .15s;
+    }
+    .job-card:hover { border-color: var(--accent); }
+    .job-card.selected { border-color: var(--accent); }
+    .job-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+    .job-title { font-weight: 600; color: var(--text); }
+    .job-meta { color: var(--muted); font-size: 12px; }
+    .badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 9999px; font-size: 11px; font-weight: 600; }
+    .badge-queued   { background: #1e2a3a; color: var(--blue); }
+    .badge-running  { background: #2a2000; color: var(--yellow); }
+    .badge-done     { background: #0f2a1a; color: var(--green); }
+    .badge-failed   { background: #2a0f0f; color: var(--red); }
+    .job-error { color: var(--red); font-size: 12px; margin-top: 4px; }
+    .no-jobs { color: var(--muted); font-size: 13px; text-align: center; padding: 32px 0; }
+
+    /* ── Right panel ── */
+    .panel-right { display: flex; flex-direction: column; overflow: hidden; }
+    .panel-toolbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .panel-toolbar h2 { font-size: 14px; font-weight: 600; }
+    #result-count { font-size: 13px; color: var(--muted); }
+
+    /* ── Table ── */
+    .table-wrap { flex: 1; overflow: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead th { background: var(--surface); position: sticky; top: 0; z-index: 1; padding: 10px 12px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
+    tbody tr { border-bottom: 1px solid var(--border); }
+    tbody tr:hover { background: var(--surface); }
+    td { padding: 9px 12px; color: var(--text); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    td a { color: var(--accent); text-decoration: none; }
+    td a:hover { text-decoration: underline; }
+    .stars { color: var(--yellow); }
+    .empty-results { color: var(--muted); text-align: center; padding: 48px; font-size: 14px; }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* ── Spinner ── */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>D7 Lead Bot</h1>
+  <div id="account-badge">Loading account…</div>
+</header>
+
+<div class="layout">
+
+  <!-- ── Left panel ── -->
+  <div class="panel-left">
+
+    <div class="panel-section">
+      <h2>New Search</h2>
+
+      <div class="form-group">
+        <label>Keywords</label>
+        <textarea id="keywords" placeholder="Dentist&#10;Plumber&#10;Electrician"></textarea>
+        <div class="hint">One keyword per line</div>
+      </div>
+
+      <div class="form-group">
+        <label>Cities / Locations</label>
+        <textarea id="locations" placeholder="New York&#10;Los Angeles&#10;Chicago"></textarea>
+        <div class="hint">One city per line</div>
+      </div>
+
+      <div class="form-group">
+        <label>Country</label>
+        <input type="text" id="country" value="US" maxlength="2" style="width:80px" />
+      </div>
+
+      <div class="form-group">
+        <label>Source</label>
+        <select id="scraper"></select>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-primary" id="run-btn" onclick="submitJobs()">
+          <span>Run</span>
+        </button>
+        <button class="btn btn-ghost btn-sm" onclick="clearCompleted()">Clear done</button>
+        <button class="btn btn-ghost btn-sm" onclick="clearAll()">Clear all</button>
+      </div>
+    </div>
+
+    <!-- Job list -->
+    <div class="job-list" id="job-list">
+      <div class="no-jobs">No jobs yet — run a search above.</div>
+    </div>
+
+  </div>
+
+  <!-- ── Right panel ── -->
+  <div class="panel-right">
+    <div class="panel-toolbar">
+      <div style="display:flex;align-items:center;gap:12px">
+        <h2>Results</h2>
+        <span id="result-count">0 leads</span>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-ghost btn-sm" onclick="downloadCsv()">Export CSV</button>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table id="results-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Phone</th>
+            <th>Email</th>
+            <th>Website</th>
+            <th>Address</th>
+            <th>Category</th>
+            <th>Google ★</th>
+            <th>Yelp ★</th>
+            <th>FB ★</th>
+          </tr>
+        </thead>
+        <tbody id="results-body">
+          <tr><td colspan="9" class="empty-results">Results will appear here as jobs complete.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+let allResults = [];
+let pollTimer = null;
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+async function init() {
+  await loadScrapers();
+  await refreshAccount();
+  await pollJobs();
+  setInterval(pollJobs, 2500);
+  setInterval(refreshAccount, 30000);
+}
+
+// ── Scrapers ─────────────────────────────────────────────────────────────────
+async function loadScrapers() {
+  const scrapers = await api('GET', '/api/scrapers');
+  const sel = document.getElementById('scraper');
+  sel.innerHTML = scrapers.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+}
+
+// ── Account badge ─────────────────────────────────────────────────────────────
+async function refreshAccount() {
+  const scraperId = document.getElementById('scraper').value || 'd7';
+  try {
+    const info = await api('GET', `/api/account/${scraperId}`);
+    document.getElementById('account-badge').innerHTML =
+      `Searches today: <span>${info.usedToday}</span> &nbsp;|&nbsp; ` +
+      `Remaining: <span>${info.remaining}</span> &nbsp;|&nbsp; ` +
+      `Daily limit: <span>${info.dailyLimit}</span>`;
+  } catch {
+    document.getElementById('account-badge').textContent = 'Account unavailable';
+  }
+}
+
+// ── Submit jobs ───────────────────────────────────────────────────────────────
+async function submitJobs() {
+  const keywords = document.getElementById('keywords').value.trim().split('\n').map(s => s.trim()).filter(Boolean);
+  const locations = document.getElementById('locations').value.trim().split('\n').map(s => s.trim()).filter(Boolean);
+  const country = document.getElementById('country').value.trim() || 'US';
+  const scraperId = document.getElementById('scraper').value;
+
+  if (!keywords.length || !locations.length) {
+    alert('Please enter at least one keyword and one location.');
+    return;
+  }
+
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span><span>Queuing…</span>';
+
+  try {
+    await api('POST', '/api/jobs', { keywords, locations, country, scraperId });
+    await pollJobs();
+  } catch (err) {
+    alert('Error: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<span>Run</span>';
+  }
+}
+
+// ── Poll jobs ─────────────────────────────────────────────────────────────────
+async function pollJobs() {
+  const jobs = await api('GET', '/api/jobs');
+  renderJobs(jobs);
+
+  // Fetch results when any job is done
+  const hasDone = jobs.some(j => j.status === 'done');
+  if (hasDone) {
+    allResults = await api('GET', '/api/results');
+    renderResults(allResults);
+  }
+}
+
+// ── Clear ─────────────────────────────────────────────────────────────────────
+async function clearCompleted() {
+  await api('DELETE', '/api/jobs/completed');
+  await pollJobs();
+}
+async function clearAll() {
+  if (!confirm('Clear all jobs and results?')) return;
+  await api('DELETE', '/api/jobs');
+  allResults = [];
+  renderResults([]);
+  await pollJobs();
+}
+
+// ── Render jobs ───────────────────────────────────────────────────────────────
+function renderJobs(jobs) {
+  const el = document.getElementById('job-list');
+  if (!jobs.length) {
+    el.innerHTML = '<div class="no-jobs">No jobs yet — run a search above.</div>';
+    return;
+  }
+  el.innerHTML = jobs.map(job => {
+    const badge = `<span class="badge badge-${job.status}">${statusLabel(job)}</span>`;
+    const error = job.error ? `<div class="job-error">${esc(job.error)}</div>` : '';
+    const count = job.status === 'done' ? ` · ${job.resultCount} leads` : '';
+    return `<div class="job-card">
+      <div class="job-header">
+        <span class="job-title">${esc(job.keyword)} — ${esc(job.location)}</span>
+        ${badge}
+      </div>
+      <div class="job-meta">${esc(job.country)}${count}</div>
+      ${error}
+    </div>`;
+  }).join('');
+}
+
+function statusLabel(job) {
+  if (job.status === 'running') return '⟳ running';
+  if (job.status === 'queued')  return '… queued';
+  if (job.status === 'done')    return '✓ done';
+  return '✗ failed';
+}
+
+// ── Render results ────────────────────────────────────────────────────────────
+function renderResults(results) {
+  const count = document.getElementById('result-count');
+  const tbody = document.getElementById('results-body');
+  count.textContent = `${results.length} lead${results.length !== 1 ? 's' : ''}`;
+
+  if (!results.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="empty-results">Results will appear here as jobs complete.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = results.map(r => `<tr>
+    <td title="${esc(r.name)}">${esc(r.name)}</td>
+    <td>${esc(r.phone)}</td>
+    <td>${esc(r.email)}</td>
+    <td>${r.website ? `<a href="${esc(r.website)}" target="_blank">${esc(r.website)}</a>` : ''}</td>
+    <td title="${esc(r.address)}">${esc(r.address)}</td>
+    <td>${esc(r.category)}</td>
+    <td class="stars">${esc(r.googleStars)} <small style="color:var(--muted)">(${esc(r.googleCount)})</small></td>
+    <td class="stars">${esc(r.yelpStars)} <small style="color:var(--muted)">(${esc(r.yelpCount)})</small></td>
+    <td class="stars">${esc(r.fbStars)} <small style="color:var(--muted)">(${esc(r.fbCount)})</small></td>
+  </tr>`).join('');
+}
+
+// ── Export CSV ────────────────────────────────────────────────────────────────
+function downloadCsv() {
+  window.open('/api/results/csv');
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function api(method, url, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(url, opts);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+// ── Start ─────────────────────────────────────────────────────────────────────
+init();
+</script>
+
+</body>
+</html>

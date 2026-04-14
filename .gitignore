@@ -2,3 +2,5 @@ node_modules/
 dist/
 .env
 .claude/
+.d7-session.json
+.tmp-bulk-download.csv

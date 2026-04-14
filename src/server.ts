@@ -3,6 +3,7 @@ import express from "express";
 import path from "path";
 import { JobQueue } from "./queue";
 import { D7Scraper } from "./scrapers/d7";
+import { D7BulkScraper } from "./scrapers/d7-bulk";
 import { UniversalLead } from "./scrapers/types";
 
 const app = express();
@@ -13,13 +14,24 @@ app.use(express.static(path.join(__dirname, "../public")));
 
 const queue = new JobQueue();
 
-// Register D7 scraper (add more scrapers here later)
+// Register D7 API scraper
 const d7ApiKey = process.env.D7_API_KEY;
 if (!d7ApiKey) {
   console.error("Error: D7_API_KEY is not set in .env");
   process.exit(1);
 }
 queue.registerScraper(new D7Scraper(d7ApiKey));
+
+// Register D7 Bulk scraper (browser-based)
+const d7Email = process.env.D7_EMAIL;
+const d7Password = process.env.D7_PASSWORD;
+if (d7Email && d7Password) {
+  const headless = process.env.HEADLESS === "true";
+  queue.registerScraper(new D7BulkScraper(d7Email, d7Password, headless));
+  console.log("D7 Bulk Search (browser) scraper registered");
+} else {
+  console.log("Skipping D7 Bulk scraper — set D7_EMAIL and D7_PASSWORD in .env to enable it");
+}
 
 // ── API routes ───────────────────────────────────────────────────────────────
 

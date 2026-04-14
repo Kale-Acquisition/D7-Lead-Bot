@@ -35,6 +35,23 @@ if (d7Email && d7Password) {
 
 // ── API routes ───────────────────────────────────────────────────────────────
 
+/** Queue status */
+app.get("/api/queue/status", (_req, res) => {
+  res.json(queue.getStatus());
+});
+
+/** Stop the queue (aborts current browser job immediately) */
+app.post("/api/queue/stop", (_req, res) => {
+  queue.stop();
+  res.json({ ok: true });
+});
+
+/** Resume the queue */
+app.post("/api/queue/resume", (_req, res) => {
+  queue.resume();
+  res.json({ ok: true });
+});
+
 /** List available scrapers */
 app.get("/api/scrapers", (_req, res) => {
   res.json(queue.listScrapers());

@@ -4,27 +4,48 @@ import * as path from "path";
 import { IScraper, UniversalLead } from "./types";
 
 const LOGIN_URL = "https://dash.d7leadfinder.com/app/login/";
-const BULK_URL = "https://dash.d7leadfinder.com/app/bulk/";
+const BULK_URL  = "https://dash.d7leadfinder.com/app/bulk/";
 const SESSION_FILE = path.join(process.cwd(), ".d7-session.json");
+const MAX_RETRIES  = 3;
+
+class StoppedError extends Error {
+  constructor() { super("Stopped by user"); }
+}
 
 export class D7BulkScraper implements IScraper {
-  readonly id = "d7-bulk";
+  readonly id   = "d7-bulk";
   readonly name = "D7 Bulk Search (Browser)";
 
-  private browser: Browser | null = null;
+  private browser: Browser | null       = null;
   private context: BrowserContext | null = null;
+  private stopped = false;
 
   constructor(
     private email: string,
     private password: string,
-    private headless = false
+    private headless = true          // invisible by default — no window interference
   ) {}
 
-  // ── Browser / session management ─────────────────────────────────────────
+  // ── Stop control ──────────────────────────────────────────────────────────
+
+  stop(): void {
+    this.stopped = true;
+  }
+
+  resume(): void {
+    this.stopped = false;
+  }
+
+  private checkStopped(): void {
+    if (this.stopped) throw new StoppedError();
+  }
+
+  // ── Browser / session ─────────────────────────────────────────────────────
 
   private async getContext(): Promise<BrowserContext> {
-    if (!this.browser) {
+    if (!this.browser || !this.browser.isConnected()) {
       this.browser = await chromium.launch({ headless: this.headless });
+      this.context = null; // force new context on new browser
     }
     if (!this.context) {
       if (fs.existsSync(SESSION_FILE)) {
@@ -41,120 +62,154 @@ export class D7BulkScraper implements IScraper {
     return this.context;
   }
 
+  /** Close browser + context so next attempt starts completely fresh. */
+  private async resetBrowser(): Promise<void> {
+    try { await this.context?.close(); } catch { /* ignore */ }
+    try { await this.browser?.close(); } catch { /* ignore */ }
+    this.browser  = null;
+    this.context  = null;
+  }
+
   private async saveSession(): Promise<void> {
     if (!this.context) return;
     const state = await this.context.storageState();
     fs.writeFileSync(SESSION_FILE, JSON.stringify(state));
   }
 
-  private async ensureLoggedIn(page: Page): Promise<void> {
-    await page.goto(BULK_URL, { waitUntil: "domcontentloaded" });
-
-    // If redirected to login page, log in
-    if (page.url().includes("/login/")) {
-      await page.fill('input[type="email"], input[name="email"], input[name="username"]', this.email);
-      await page.fill('input[type="password"], input[name="password"]', this.password);
-      await page.click('button[type="submit"], input[type="submit"]');
-      await page.waitForURL("**/app/**", { timeout: 15000 });
-      await this.saveSession();
-
-      // Navigate to bulk search after login
-      await page.goto(BULK_URL, { waitUntil: "domcontentloaded" });
-    }
-  }
-
-  // ── Main search ───────────────────────────────────────────────────────────
+  // ── Public search (with retries + crash recovery) ─────────────────────────
 
   async search(keywords: string[], location: string, _country = "US"): Promise<UniversalLead[]> {
+    let lastError: Error = new Error("Unknown error");
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      this.checkStopped();
+
+      try {
+        return await this.doSearch(keywords, location);
+      } catch (err) {
+        if (err instanceof StoppedError) throw err; // never retry a stop
+
+        lastError = err instanceof Error ? err : new Error(String(err));
+        console.error(`[d7-bulk] Attempt ${attempt}/${MAX_RETRIES} failed: ${lastError.message}`);
+
+        await this.resetBrowser(); // fresh browser for next attempt
+
+        if (attempt < MAX_RETRIES) {
+          const backoff = attempt * 3000;
+          console.log(`[d7-bulk] Retrying in ${backoff / 1000}s…`);
+          await new Promise((r) => setTimeout(r, backoff));
+        }
+      }
+    }
+
+    throw lastError;
+  }
+
+  // ── Core search logic ─────────────────────────────────────────────────────
+
+  private async doSearch(keywords: string[], location: string): Promise<UniversalLead[]> {
     const context = await this.getContext();
-    const page = await context.newPage();
+    const page    = await context.newPage();
 
     try {
+      // 1. Login
+      this.checkStopped();
       await this.ensureLoggedIn(page);
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(800);
 
-      // ── 1. Select location ──────────────────────────────────────────────
+      // 2. Select location
+      this.checkStopped();
       await this.selectLocation(page, location);
 
-      // ── 2. Fill keywords textarea ───────────────────────────────────────
+      // 3. Fill keywords
+      this.checkStopped();
       const textarea = page.locator("textarea").first();
       await textarea.click();
       await textarea.fill(keywords.join("\n"));
 
-      // ── 3. Fill reference / filename ────────────────────────────────────
-      const dateStr = new Date().toLocaleDateString("en-US", {
-        month: "short", day: "numeric", year: "numeric",
-      });
-      const refName = `${location} — ${dateStr}`;
-      // Reference input is usually the last text input on the form
+      // 4. Fill reference name
+      this.checkStopped();
+      const dateStr  = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+      const refName  = `${location} — ${dateStr}`;
       const refInput = page.locator('input[type="text"]').last();
       await refInput.fill(refName);
 
-      // ── 4. Submit ────────────────────────────────────────────────────────
+      // 5. Submit
+      this.checkStopped();
       await page.click('button:has-text("Fetch Leads"), input[value*="Fetch"]');
-
-      // Wait for redirect to the bulk view page
       await page.waitForURL("**/bulk/view/**", { timeout: 30000 });
+      console.log(`[d7-bulk] Submitted → ${page.url()}`);
 
-      const bulkUrl = page.url();
-      console.log(`Bulk search submitted → ${bulkUrl}`);
-
-      // ── 5. Wait for D7 to finish processing ─────────────────────────────
+      // 6. Wait for D7 to process
       await this.waitForProcessing(page, keywords.length);
 
-      // ── 6. Download CSV and parse ────────────────────────────────────────
+      // 7. Download CSV
+      this.checkStopped();
       const results = await this.downloadCsv(page);
-      console.log(`Bulk search done — ${results.length} leads`);
+      console.log(`[d7-bulk] Done — ${results.length} leads`);
       return results;
 
     } finally {
-      await page.close();
+      await page.close().catch(() => {});
     }
   }
 
-  // ── Location dropdown ─────────────────────────────────────────────────────
-  // D7 uses a Select2 dropdown for location selection
+  // ── Login ─────────────────────────────────────────────────────────────────
 
-  private async selectLocation(page: Page, location: string): Promise<void> {
-    // Select2: click the container to open it
-    const select2Container = page.locator(".select2-container, .select2-selection").first();
-    await select2Container.click();
-    await page.waitForTimeout(500);
+  private async ensureLoggedIn(page: Page): Promise<void> {
+    await page.goto(BULK_URL, { waitUntil: "domcontentloaded" });
 
-    // Type in the search field that appears
-    const searchField = page.locator(".select2-search__field, .select2-search input").first();
-    await searchField.fill(location);
-    await page.waitForTimeout(1500); // wait for results to load
+    if (!page.url().includes("/login/")) return; // already logged in
 
-    // Click the first matching result
-    const firstOption = page.locator(".select2-results__option").first();
-    await firstOption.waitFor({ timeout: 5000 });
-    await firstOption.click();
-    await page.waitForTimeout(500);
+    await page.fill('input[type="email"], input[name="email"], input[name="username"]', this.email);
+    await page.fill('input[type="password"], input[name="password"]', this.password);
+    await page.click('button[type="submit"], input[type="submit"]');
+    await page.waitForURL("**/app/**", { timeout: 15000 });
+    await this.saveSession();
+    await page.goto(BULK_URL, { waitUntil: "domcontentloaded" });
   }
 
-  // ── Wait for all keyword rows to finish ───────────────────────────────────
+  // ── Location dropdown (Select2) ───────────────────────────────────────────
+
+  private async selectLocation(page: Page, location: string): Promise<void> {
+    await page.locator(".select2-container, .select2-selection").first().click();
+    await page.waitForTimeout(400);
+
+    const searchField = page.locator(".select2-search__field, .select2-search input").first();
+    await searchField.fill(location);
+    await page.waitForTimeout(1500);
+
+    const firstOption = page.locator(".select2-results__option").first();
+    await firstOption.waitFor({ timeout: 6000 });
+    await firstOption.click();
+    await page.waitForTimeout(400);
+  }
+
+  // ── Wait for processing ───────────────────────────────────────────────────
 
   private async waitForProcessing(page: Page, keywordCount: number): Promise<void> {
-    const maxWait = 30 * 60 * 1000; // 30 minutes max
-    const pollInterval = 15 * 1000; // check every 15s
-    const start = Date.now();
+    const maxWait      = 30 * 60 * 1000; // 30 min
+    const pollInterval = 15 * 1000;
+    const start        = Date.now();
 
-    console.log(`Waiting for D7 to process ${keywordCount} keyword(s)…`);
+    console.log(`[d7-bulk] Waiting for ${keywordCount} keyword(s) to process…`);
 
     while (Date.now() - start < maxWait) {
+      this.checkStopped();
+
       await page.waitForTimeout(pollInterval);
       await page.reload({ waitUntil: "domcontentloaded" });
 
-      // Count rows that have a "View Single List" link (= done)
       const doneRows = await page.locator('a:has-text("View Single List")').count();
-      console.log(`  ${doneRows}/${keywordCount} complete`);
+      console.log(`[d7-bulk]   ${doneRows}/${keywordCount} done`);
 
-      if (doneRows >= keywordCount) break;
+      if (doneRows >= keywordCount) return;
     }
+
+    throw new Error(`Timed out waiting for D7 to process ${keywordCount} keywords`);
   }
 
-  // ── Download CSV from the bulk view page ──────────────────────────────────
+  // ── Download CSV ──────────────────────────────────────────────────────────
 
   private async downloadCsv(page: Page): Promise<UniversalLead[]> {
     const [download] = await Promise.all([
@@ -177,7 +232,6 @@ export class D7BulkScraper implements IScraper {
     const lines = csv.trim().split("\n").filter(Boolean);
     if (lines.length < 2) return [];
 
-    // Parse header row
     const headers = this.splitCsvLine(lines[0]).map((h) => h.toLowerCase().trim());
 
     const col = (row: string[], ...names: string[]): string => {
@@ -221,9 +275,6 @@ export class D7BulkScraper implements IScraper {
   }
 
   async close(): Promise<void> {
-    await this.context?.close();
-    await this.browser?.close();
-    this.browser = null;
-    this.context = null;
+    await this.resetBrowser();
   }
 }

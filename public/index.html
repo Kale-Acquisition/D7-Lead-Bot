@@ -22,10 +22,15 @@
     }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
 
-    header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+    header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
     header h1 { font-size: 20px; font-weight: 700; color: var(--accent); }
-    #account-badge { font-size: 13px; color: var(--muted); display: flex; gap: 16px; }
+    #account-badge { font-size: 13px; color: var(--muted); display: flex; gap: 16px; flex: 1; }
     #account-badge span { color: var(--text); font-weight: 600; }
+    #stop-btn { padding: 7px 18px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 700; transition: background .15s; white-space: nowrap; }
+    #stop-btn.running { background: var(--red); color: #fff; }
+    #stop-btn.running:hover { background: #dc2626; }
+    #stop-btn.stopped { background: var(--green); color: #fff; }
+    #stop-btn.stopped:hover { background: #16a34a; }
 
     .layout { display: grid; grid-template-columns: 360px 1fr; gap: 0; height: calc(100vh - 57px); overflow: hidden; }
 
@@ -108,6 +113,7 @@
 <header>
   <h1>D7 Lead Bot</h1>
   <div id="account-badge">Loading account…</div>
+  <button id="stop-btn" class="running" onclick="toggleQueue()">⏹ Stop Queue</button>
 </header>
 
 <div class="layout">
@@ -195,15 +201,48 @@
 <script>
 // ── State ────────────────────────────────────────────────────────────────────
 let allResults = [];
-let pollTimer = null;
+let queueStopped = false;
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   await loadScrapers();
   await refreshAccount();
+  await refreshQueueStatus();
   await pollJobs();
   setInterval(pollJobs, 2500);
   setInterval(refreshAccount, 30000);
+  setInterval(refreshQueueStatus, 2500);
+}
+
+// ── Queue stop / resume ───────────────────────────────────────────────────────
+async function toggleQueue() {
+  const btn = document.getElementById('stop-btn');
+  btn.disabled = true;
+  try {
+    if (queueStopped) {
+      await api('POST', '/api/queue/resume');
+    } else {
+      await api('POST', '/api/queue/stop');
+    }
+    await refreshQueueStatus();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function refreshQueueStatus() {
+  try {
+    const status = await api('GET', '/api/queue/status');
+    queueStopped = status.stopped;
+    const btn = document.getElementById('stop-btn');
+    if (queueStopped) {
+      btn.className = 'stopped';
+      btn.textContent = '▶ Resume Queue';
+    } else {
+      btn.className = 'running';
+      btn.textContent = '⏹ Stop Queue';
+    }
+  } catch { /* ignore */ }
 }
 
 // ── Scrapers ─────────────────────────────────────────────────────────────────

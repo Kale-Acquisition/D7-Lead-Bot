@@ -1,13 +1,15 @@
 import { randomUUID } from "crypto";
 import { IScraper, SearchJob, UniversalLead } from "./scrapers/types";
+import { D7BulkScraper } from "./scrapers/d7-bulk";
 
 export class JobQueue {
   private jobs: Map<string, SearchJob> = new Map();
-  private pending: string[] = []; // job IDs waiting to run
+  private pending: string[] = [];
   private processing = false;
+  private stopped = false;
   private scrapers: Map<string, IScraper> = new Map();
 
-  // ── Scraper registry ─────────────────────────────────────────────────────
+  // ── Scraper registry ──────────────────────────────────────────────────────
 
   registerScraper(scraper: IScraper): void {
     this.scrapers.set(scraper.id, scraper);
@@ -21,11 +23,35 @@ export class JobQueue {
     return Array.from(this.scrapers.values()).map((s) => ({ id: s.id, name: s.name }));
   }
 
-  // ── Job management ───────────────────────────────────────────────────────
+  // ── Stop / Resume ─────────────────────────────────────────────────────────
 
-  /**
-   * Create one job per location, each job searches all keywords against that location.
-   */
+  stop(): void {
+    this.stopped = true;
+    // Tell any browser-based scraper to abort immediately
+    for (const scraper of this.scrapers.values()) {
+      if (scraper instanceof D7BulkScraper) scraper.stop();
+    }
+  }
+
+  resume(): void {
+    this.stopped = false;
+    // Tell browser-based scrapers they can work again
+    for (const scraper of this.scrapers.values()) {
+      if (scraper instanceof D7BulkScraper) scraper.resume();
+    }
+    this.pump();
+  }
+
+  getStatus(): { stopped: boolean; processing: boolean; pendingCount: number } {
+    return {
+      stopped:      this.stopped,
+      processing:   this.processing,
+      pendingCount: this.pending.length,
+    };
+  }
+
+  // ── Job management ────────────────────────────────────────────────────────
+
   enqueue(
     keywords: string[],
     locations: string[],
@@ -51,7 +77,7 @@ export class JobQueue {
       created.push(job);
     }
 
-    this.pump(); // kick off processing if idle
+    if (!this.stopped) this.pump();
     return created;
   }
 
@@ -84,37 +110,40 @@ export class JobQueue {
     this.pending = [];
   }
 
-  // ── Internal processor ───────────────────────────────────────────────────
+  // ── Internal processor ────────────────────────────────────────────────────
 
   private async pump(): Promise<void> {
-    if (this.processing) return;
+    if (this.processing || this.stopped) return;
     this.processing = true;
 
-    while (this.pending.length > 0) {
+    while (this.pending.length > 0 && !this.stopped) {
       const jobId = this.pending.shift()!;
-      const job = this.jobs.get(jobId);
+      const job   = this.jobs.get(jobId);
       if (!job) continue;
 
       const scraper = this.scrapers.get(job.scraperId);
       if (!scraper) {
-        job.status = "failed";
-        job.error = `Unknown scraper: ${job.scraperId}`;
+        job.status     = "failed";
+        job.error      = `Unknown scraper: ${job.scraperId}`;
         job.finishedAt = Date.now();
         continue;
       }
 
-      job.status = "running";
+      job.status    = "running";
       job.startedAt = Date.now();
 
       try {
-        job.results = await scraper.search(job.keywords, job.location, job.country);
+        job.results     = await scraper.search(job.keywords, job.location, job.country);
         job.resultCount = job.results.length;
-        job.status = "done";
+        job.status      = "done";
       } catch (err) {
-        job.status = "failed";
-        job.error = err instanceof Error ? err.message : String(err);
+        const msg      = err instanceof Error ? err.message : String(err);
+        job.status     = msg === "Stopped by user" ? "queued" : "failed";
+        job.error      = msg === "Stopped by user" ? undefined : msg;
+        // If stopped mid-job, put it back at the front of the queue
+        if (msg === "Stopped by user") this.pending.unshift(jobId);
       } finally {
-        job.finishedAt = Date.now();
+        if (job.status !== "queued") job.finishedAt = Date.now();
       }
     }
 

@@ -16,7 +16,7 @@ export interface UniversalLead {
 
 export interface SearchJob {
   id: string;
-  keyword: string;
+  keywords: string[];
   location: string;
   country: string;
   scraperId: string;
@@ -39,6 +39,6 @@ export interface AccountSummary {
 export interface IScraper {
   id: string;
   name: string;
-  search(keyword: string, location: string, country: string): Promise<UniversalLead[]>;
+  search(keywords: string[], location: string, country: string): Promise<UniversalLead[]>;
   getAccount?(): Promise<AccountSummary>;
 }

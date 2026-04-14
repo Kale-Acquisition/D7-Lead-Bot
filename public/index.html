@@ -293,10 +293,10 @@ function renderJobs(jobs) {
     const count = job.status === 'done' ? ` · ${job.resultCount} leads` : '';
     return `<div class="job-card">
       <div class="job-header">
-        <span class="job-title">${esc(job.keyword)} — ${esc(job.location)}</span>
+        <span class="job-title">${esc(job.location)}</span>
         ${badge}
       </div>
-      <div class="job-meta">${esc(job.country)}${count}</div>
+      <div class="job-meta">${esc(job.country)} · ${esc(job.keywords.join(', '))}${count}</div>
       ${error}
     </div>`;
   }).join('');

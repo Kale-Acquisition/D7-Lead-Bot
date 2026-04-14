@@ -24,7 +24,7 @@ export class JobQueue {
   // ── Job management ───────────────────────────────────────────────────────
 
   /**
-   * Create one job per (keyword × location) combination and enqueue them.
+   * Create one job per location, each job searches all keywords against that location.
    */
   enqueue(
     keywords: string[],
@@ -34,23 +34,21 @@ export class JobQueue {
   ): SearchJob[] {
     const created: SearchJob[] = [];
 
-    for (const keyword of keywords) {
-      for (const location of locations) {
-        const job: SearchJob = {
-          id: randomUUID(),
-          keyword,
-          location,
-          country,
-          scraperId,
-          status: "queued",
-          results: [],
-          resultCount: 0,
-          createdAt: Date.now(),
-        };
-        this.jobs.set(job.id, job);
-        this.pending.push(job.id);
-        created.push(job);
-      }
+    for (const location of locations) {
+      const job: SearchJob = {
+        id: randomUUID(),
+        keywords,
+        location,
+        country,
+        scraperId,
+        status: "queued",
+        results: [],
+        resultCount: 0,
+        createdAt: Date.now(),
+      };
+      this.jobs.set(job.id, job);
+      this.pending.push(job.id);
+      created.push(job);
     }
 
     this.pump(); // kick off processing if idle
@@ -109,7 +107,7 @@ export class JobQueue {
       job.startedAt = Date.now();
 
       try {
-        job.results = await scraper.search(job.keyword, job.location, job.country);
+        job.results = await scraper.search(job.keywords, job.location, job.country);
         job.resultCount = job.results.length;
         job.status = "done";
       } catch (err) {

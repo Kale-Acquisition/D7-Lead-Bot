@@ -57,41 +57,49 @@ export class D7Scraper implements IScraper {
     });
   }
 
-  async search(keyword: string, location: string, country = "US"): Promise<UniversalLead[]> {
-    // 1. Start the search
-    const { data: startData } = await this.http.post<D7SearchResponse | D7ApiError>(
-      "search/",
-      null,
-      { params: { keyword, location, country } }
-    );
-    if (isApiError(startData)) throw new Error(`D7 API error: ${startData.error}`);
+  async search(keywords: string[], location: string, country = "US"): Promise<UniversalLead[]> {
+    const allResults: UniversalLead[] = [];
 
-    // 2. Wait the required delay
-    const delaySecs = parseInt(startData.wait_seconds, 10);
-    await new Promise((res) => setTimeout(res, delaySecs * 1000));
+    for (const keyword of keywords) {
+      // 1. Start the search for this keyword
+      const { data: startData } = await this.http.post<D7SearchResponse | D7ApiError>(
+        "search/",
+        null,
+        { params: { keyword, location, country } }
+      );
+      if (isApiError(startData)) throw new Error(`D7 API error (${keyword}): ${startData.error}`);
 
-    // 3. Fetch results
-    const { data: raw } = await this.http.get<D7Lead[] | D7ApiError>("/results/", {
-      params: { id: startData.searchid },
-    });
-    if (isApiError(raw)) throw new Error(`D7 API error: ${raw.error}`);
+      // 2. Wait the required delay
+      const delaySecs = parseInt(startData.wait_seconds, 10);
+      await new Promise((res) => setTimeout(res, delaySecs * 1000));
 
-    return raw.map((lead): UniversalLead => ({
-      name: lead.name ?? "",
-      phone: lead.phone ?? "",
-      email: lead.email ?? "",
-      website: lead.website ?? "",
-      address: [lead.address1, lead.address2, lead.region, lead.zip, lead.country]
-        .filter(Boolean)
-        .join(", "),
-      category: lead.category ?? "",
-      googleStars: lead.googlestars ?? "",
-      googleCount: lead.googlecount ?? "",
-      yelpStars: lead.yelpstars ?? "",
-      yelpCount: lead.yelpcount ?? "",
-      fbStars: lead.fbstars ?? "",
-      fbCount: lead.fbcount ?? "",
-    }));
+      // 3. Fetch results
+      const { data: raw } = await this.http.get<D7Lead[] | D7ApiError>("/results/", {
+        params: { id: startData.searchid },
+      });
+      if (isApiError(raw)) throw new Error(`D7 API error (${keyword}): ${raw.error}`);
+
+      const mapped = raw.map((lead): UniversalLead => ({
+        name: lead.name ?? "",
+        phone: lead.phone ?? "",
+        email: lead.email ?? "",
+        website: lead.website ?? "",
+        address: [lead.address1, lead.address2, lead.region, lead.zip, lead.country]
+          .filter(Boolean)
+          .join(", "),
+        category: lead.category ?? "",
+        googleStars: lead.googlestars ?? "",
+        googleCount: lead.googlecount ?? "",
+        yelpStars: lead.yelpstars ?? "",
+        yelpCount: lead.yelpcount ?? "",
+        fbStars: lead.fbstars ?? "",
+        fbCount: lead.fbcount ?? "",
+      }));
+
+      allResults.push(...mapped);
+    }
+
+    return allResults;
   }
 
   async getAccount(): Promise<AccountSummary> {

@@ -12,6 +12,10 @@ class StoppedError extends Error {
   constructor() { super("Stopped by user"); }
 }
 
+class LocationNotFoundError extends Error {
+  constructor(location: string) { super(`Location not found in D7: "${location}"`); }
+}
+
 export class D7BulkScraper implements IScraper {
   readonly id   = "d7-bulk";
   readonly name = "D7 Bulk Search (Browser)";
@@ -87,7 +91,8 @@ export class D7BulkScraper implements IScraper {
       try {
         return await this.doSearch(keywords, location);
       } catch (err) {
-        if (err instanceof StoppedError) throw err; // never retry a stop
+        if (err instanceof StoppedError) throw err;       // never retry a stop
+        if (err instanceof LocationNotFoundError) throw err; // never retry a missing city
 
         lastError = err instanceof Error ? err : new Error(String(err));
         console.error(`[d7-bulk] Attempt ${attempt}/${MAX_RETRIES} failed: ${lastError.message}`);
@@ -179,8 +184,20 @@ export class D7BulkScraper implements IScraper {
     await searchField.fill(location);
     await page.waitForTimeout(1500);
 
-    const firstOption = page.locator(".select2-results__option").first();
-    await firstOption.waitFor({ timeout: 6000 });
+    // Check for "no results" before trying to click
+    const noResults = page.locator(".select2-results__option--disabled, .select2-results__message");
+    const firstOption = page.locator(".select2-results__option:not(.select2-results__option--disabled)").first();
+
+    // Wait up to 6s for either a valid option or a no-results message
+    await Promise.race([
+      firstOption.waitFor({ timeout: 6000 }),
+      noResults.waitFor({ timeout: 6000 }),
+    ]).catch(() => { throw new LocationNotFoundError(location); });
+
+    // If no valid option exists, the city wasn't found
+    const hasOption = await firstOption.isVisible().catch(() => false);
+    if (!hasOption) throw new LocationNotFoundError(location);
+
     await firstOption.click();
     await page.waitForTimeout(400);
   }

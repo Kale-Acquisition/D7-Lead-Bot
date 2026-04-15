@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from "axios";
-import { IScraper, UniversalLead, AccountSummary } from "./types";
+import { IScraper, UniversalLead, AccountSummary, PauseError } from "./types";
 
 // ── Raw D7 API shapes ────────────────────────────────────────────────────────
 
@@ -61,42 +61,50 @@ export class D7Scraper implements IScraper {
     const allResults: UniversalLead[] = [];
 
     for (const keyword of keywords) {
-      // 1. Start the search for this keyword
-      const { data: startData } = await this.http.post<D7SearchResponse | D7ApiError>(
-        "search/",
-        null,
-        { params: { keyword, location, country } }
-      );
-      if (isApiError(startData)) throw new Error(`D7 API error (${keyword}): ${startData.error}`);
+      try {
+        // 1. Start the search for this keyword
+        const { data: startData } = await this.http.post<D7SearchResponse | D7ApiError>(
+          "search/",
+          null,
+          { params: { keyword, location, country } }
+        );
+        if (isApiError(startData)) throw new PauseError(`D7 API error (${keyword}): ${startData.error}`);
 
-      // 2. Wait the required delay
-      const delaySecs = parseInt(startData.wait_seconds, 10);
-      await new Promise((res) => setTimeout(res, delaySecs * 1000));
+        // 2. Wait the required delay
+        const delaySecs = parseInt(startData.wait_seconds, 10);
+        await new Promise((res) => setTimeout(res, delaySecs * 1000));
 
-      // 3. Fetch results
-      const { data: raw } = await this.http.get<D7Lead[] | D7ApiError>("/results/", {
-        params: { id: startData.searchid },
-      });
-      if (isApiError(raw)) throw new Error(`D7 API error (${keyword}): ${raw.error}`);
+        // 3. Fetch results
+        const { data: raw } = await this.http.get<D7Lead[] | D7ApiError>("/results/", {
+          params: { id: startData.searchid },
+        });
+        if (isApiError(raw)) throw new PauseError(`D7 API error (${keyword}): ${raw.error}`);
 
-      const mapped = raw.map((lead): UniversalLead => ({
-        name: lead.name ?? "",
-        phone: lead.phone ?? "",
-        email: lead.email ?? "",
-        website: lead.website ?? "",
-        address: [lead.address1, lead.address2, lead.region, lead.zip, lead.country]
-          .filter(Boolean)
-          .join(", "),
-        category: lead.category ?? "",
-        googleStars: lead.googlestars ?? "",
-        googleCount: lead.googlecount ?? "",
-        yelpStars: lead.yelpstars ?? "",
-        yelpCount: lead.yelpcount ?? "",
-        fbStars: lead.fbstars ?? "",
-        fbCount: lead.fbcount ?? "",
-      }));
+        const mapped = raw.map((lead): UniversalLead => ({
+          name: lead.name ?? "",
+          phone: lead.phone ?? "",
+          email: lead.email ?? "",
+          website: lead.website ?? "",
+          address: [lead.address1, lead.address2, lead.region, lead.zip, lead.country]
+            .filter(Boolean)
+            .join(", "),
+          category: lead.category ?? "",
+          googleStars: lead.googlestars ?? "",
+          googleCount: lead.googlecount ?? "",
+          yelpStars: lead.yelpstars ?? "",
+          yelpCount: lead.yelpcount ?? "",
+          fbStars: lead.fbstars ?? "",
+          fbCount: lead.fbcount ?? "",
+        }));
 
-      allResults.push(...mapped);
+        allResults.push(...mapped);
+
+      } catch (err) {
+        if (err instanceof PauseError) throw err; // already wrapped, bubble up
+        // Network error, timeout, or anything unexpected — pause the queue
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new PauseError(`Network/unexpected error (${keyword}): ${msg}`);
+      }
     }
 
     return allResults;

@@ -1,3 +1,13 @@
+/** Thrown when the queue should pause and re-queue the current job. */
+export class PauseError extends Error {
+  constructor(reason: string) { super(reason); this.name = "PauseError"; }
+}
+
+/** Thrown when the user manually stops the queue. */
+export class StoppedError extends Error {
+  constructor() { super("Stopped by user"); this.name = "StoppedError"; }
+}
+
 export interface UniversalLead {
   name: string;
   phone: string;

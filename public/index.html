@@ -113,7 +113,10 @@
 <header>
   <h1>D7 Lead Bot</h1>
   <div id="account-badge">Loading account…</div>
-  <button id="stop-btn" class="running" onclick="toggleQueue()">⏹ Stop Queue</button>
+  <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+    <button id="stop-btn" class="running" onclick="toggleQueue()">⏹ Stop Queue</button>
+    <span id="pause-reason" style="font-size:11px;color:#ef4444;max-width:260px;text-align:right;display:none"></span>
+  </div>
 </header>
 
 <div class="layout">
@@ -235,12 +238,19 @@ async function refreshQueueStatus() {
     const status = await api('GET', '/api/queue/status');
     queueStopped = status.stopped;
     const btn = document.getElementById('stop-btn');
+    const reasonEl = document.getElementById('pause-reason');
     if (queueStopped) {
       btn.className = 'stopped';
       btn.textContent = '▶ Resume Queue';
+      if (status.pauseReason) {
+        reasonEl.textContent = '⚠ Paused: ' + status.pauseReason;
+        reasonEl.style.display = 'block';
+      }
     } else {
       btn.className = 'running';
       btn.textContent = '⏹ Stop Queue';
+      reasonEl.style.display = 'none';
+      reasonEl.textContent = '';
     }
   } catch { /* ignore */ }
 }

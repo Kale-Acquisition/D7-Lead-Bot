@@ -1,16 +1,12 @@
 import { chromium, Browser, BrowserContext, Page } from "playwright";
 import * as fs from "fs";
 import * as path from "path";
-import { IScraper, UniversalLead } from "./types";
+import { IScraper, UniversalLead, PauseError, StoppedError } from "./types";
 
 const LOGIN_URL = "https://dash.d7leadfinder.com/app/login/";
 const BULK_URL  = "https://dash.d7leadfinder.com/app/bulk/";
 const SESSION_FILE = path.join(process.cwd(), ".d7-session.json");
 const MAX_RETRIES  = 3;
-
-class StoppedError extends Error {
-  constructor() { super("Stopped by user"); }
-}
 
 class LocationNotFoundError extends Error {
   constructor(location: string) { super(`Location not found in D7: "${location}"`); }
@@ -41,7 +37,7 @@ export class D7BulkScraper implements IScraper {
   }
 
   private checkStopped(): void {
-    if (this.stopped) throw new StoppedError();
+    if (this.stopped) throw new StoppedError();  // user manually stopped
   }
 
   // ── Browser / session ─────────────────────────────────────────────────────
@@ -107,7 +103,8 @@ export class D7BulkScraper implements IScraper {
       }
     }
 
-    throw lastError;
+    // All retries exhausted — pause the queue so the user can investigate
+    throw new PauseError(lastError.message);
   }
 
   // ── Core search logic ─────────────────────────────────────────────────────

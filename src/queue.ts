@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { IScraper, SearchJob, UniversalLead } from "./scrapers/types";
+import { IScraper, SearchJob, UniversalLead, PauseError, StoppedError } from "./scrapers/types";
 import { D7BulkScraper } from "./scrapers/d7-bulk";
 
 export class JobQueue {
@@ -7,6 +7,7 @@ export class JobQueue {
   private pending: string[] = [];
   private processing = false;
   private stopped = false;
+  private pauseReason: string | null = null;
   private scrapers: Map<string, IScraper> = new Map();
 
   // ── Scraper registry ──────────────────────────────────────────────────────
@@ -27,7 +28,7 @@ export class JobQueue {
 
   stop(): void {
     this.stopped = true;
-    // Tell any browser-based scraper to abort immediately
+    this.pauseReason = null; // manual stop has no auto-reason
     for (const scraper of this.scrapers.values()) {
       if (scraper instanceof D7BulkScraper) scraper.stop();
     }
@@ -35,18 +36,19 @@ export class JobQueue {
 
   resume(): void {
     this.stopped = false;
-    // Tell browser-based scrapers they can work again
+    this.pauseReason = null;
     for (const scraper of this.scrapers.values()) {
       if (scraper instanceof D7BulkScraper) scraper.resume();
     }
     this.pump();
   }
 
-  getStatus(): { stopped: boolean; processing: boolean; pendingCount: number } {
+  getStatus(): { stopped: boolean; processing: boolean; pendingCount: number; pauseReason: string | null } {
     return {
       stopped:      this.stopped,
       processing:   this.processing,
       pendingCount: this.pending.length,
+      pauseReason:  this.pauseReason,
     };
   }
 
@@ -137,11 +139,30 @@ export class JobQueue {
         job.resultCount = job.results.length;
         job.status      = "done";
       } catch (err) {
-        const msg      = err instanceof Error ? err.message : String(err);
-        job.status     = msg === "Stopped by user" ? "queued" : "failed";
-        job.error      = msg === "Stopped by user" ? undefined : msg;
-        // If stopped mid-job, put it back at the front of the queue
-        if (msg === "Stopped by user") this.pending.unshift(jobId);
+        if (err instanceof StoppedError) {
+          // User manually stopped — re-queue, halt loop
+          job.status = "queued";
+          this.pending.unshift(jobId);
+          break;
+
+        } else if (err instanceof PauseError) {
+          // Something went wrong (quota, network, crash) — re-queue, pause, show reason
+          job.status        = "queued";
+          this.pending.unshift(jobId);
+          this.stopped      = true;
+          this.pauseReason  = err.message;
+          console.warn(`[queue] Paused — ${err.message}`);
+          for (const s of this.scrapers.values()) {
+            if (s instanceof D7BulkScraper) s.stop();
+          }
+          break;
+
+        } else {
+          // Non-recoverable (e.g. LocationNotFoundError) — mark failed, continue queue
+          job.status     = "failed";
+          job.error      = err instanceof Error ? err.message : String(err);
+          job.finishedAt = Date.now();
+        }
       } finally {
         if (job.status !== "queued") job.finishedAt = Date.now();
       }

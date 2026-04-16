@@ -192,7 +192,8 @@ export class D7BulkScraper implements IScraper {
       // 5. Submit (inside right panel)
       this.checkStopped();
       await panel.locator('button:has-text("Fetch Leads")').click();
-      await page.waitForURL("**/bulk/view/**", { timeout: 30000 });
+      console.log(`[d7-bulk] Form submitted, waiting for D7 to redirect…`);
+      await page.waitForURL("**/bulk/view/**", { timeout: 180000 }); // 3 min — D7 can be slow
       console.log(`[d7-bulk] Submitted → ${page.url()}`);
 
       // 6. Wait for D7 to process

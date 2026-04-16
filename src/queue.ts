@@ -166,6 +166,16 @@ export class JobQueue {
       } finally {
         if (job.status !== "queued") job.finishedAt = Date.now();
       }
+
+      // D7 Bulk Search requires 60s between submissions to avoid rate limiting
+      if (
+        job.scraperId === "d7-bulk" &&
+        this.pending.length > 0 &&
+        !this.stopped
+      ) {
+        console.log("[queue] Waiting 60s before next bulk search (D7 rate limit)…");
+        await new Promise((r) => setTimeout(r, 60000));
+      }
     }
 
     this.processing = false;

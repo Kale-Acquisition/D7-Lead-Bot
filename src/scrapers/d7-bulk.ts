@@ -205,11 +205,8 @@ export class D7BulkScraper implements IScraper {
       await textarea.fill(keywords.join("\n"));
 
       this.checkStopped();
-      // Include time so each submission has a unique, findable reference name
-      const now     = new Date();
-      const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-      const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-      const refName = `${location} — ${dateStr} ${timeStr}`;
+      const dateStr = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+      const refName = `${location} — ${dateStr}`;
 
       const refInput = panel.locator('input[type="text"]').last();
       await refInput.fill(refName);

@@ -25,13 +25,11 @@ export class D7BulkScraper implements IScraper {
   constructor(
     private email: string,
     private password: string,
-    private headless = true          // invisible by default — no window interference
+    private headless = true
   ) {}
 
   // ── Manual login (for CAPTCHA) ────────────────────────────────────────────
 
-  /** Opens a visible browser so the user can solve the CAPTCHA once.
-   *  Credentials are pre-filled — user only needs to solve CAPTCHA and submit. */
   async loginManually(): Promise<void> {
     this.loginState = "waiting";
     this.loginError = null;
@@ -43,19 +41,16 @@ export class D7BulkScraper implements IScraper {
     try {
       await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
 
-      // Pre-fill credentials so user only needs to handle the CAPTCHA
       await page.fill('input[type="email"], input[name="email"], input[name="username"]', this.email).catch(() => {});
       await page.fill('input[type="password"], input[name="password"]', this.password).catch(() => {});
 
       console.log("[d7-bulk] Browser opened — waiting for you to solve the CAPTCHA…");
 
-      // Wait up to 5 minutes for the user to complete login
       await page.waitForURL(
         (url) => !url.toString().includes("/login/") && !url.toString().includes("/auth/"),
         { timeout: 5 * 60 * 1000 }
       );
 
-      // Save session so future headless runs skip login entirely
       const state = await ctx.storageState();
       fs.writeFileSync(SESSION_FILE, JSON.stringify(state));
       this.loginState = "connected";
@@ -81,16 +76,11 @@ export class D7BulkScraper implements IScraper {
 
   // ── Stop control ──────────────────────────────────────────────────────────
 
-  stop(): void {
-    this.stopped = true;
-  }
-
-  resume(): void {
-    this.stopped = false;
-  }
+  stop(): void   { this.stopped = true; }
+  resume(): void { this.stopped = false; }
 
   private checkStopped(): void {
-    if (this.stopped) throw new StoppedError();  // user manually stopped
+    if (this.stopped) throw new StoppedError();
   }
 
   // ── Browser / session ─────────────────────────────────────────────────────
@@ -98,7 +88,7 @@ export class D7BulkScraper implements IScraper {
   private async getContext(): Promise<BrowserContext> {
     if (!this.browser || !this.browser.isConnected()) {
       this.browser = await chromium.launch({ headless: this.headless });
-      this.context = null; // force new context on new browser
+      this.context = null;
     }
     if (!this.context) {
       if (fs.existsSync(SESSION_FILE)) {
@@ -115,7 +105,6 @@ export class D7BulkScraper implements IScraper {
     return this.context;
   }
 
-  /** Close browser + context so next attempt starts completely fresh. */
   private async resetBrowser(): Promise<void> {
     try { await this.context?.close(); } catch { /* ignore */ }
     try { await this.browser?.close(); } catch { /* ignore */ }
@@ -123,26 +112,33 @@ export class D7BulkScraper implements IScraper {
     this.context  = null;
   }
 
-
-  // ── Public search (with retries + crash recovery) ─────────────────────────
+  // ── IScraper: single-call search (used by non-batch path) ─────────────────
 
   async search(keywords: string[], location: string, _country = "US"): Promise<UniversalLead[]> {
+    const { viewUrl, keywordCount } = await this.submitBulkJob(keywords, location);
+    return await this.downloadBulkJob(viewUrl, keywordCount);
+  }
+
+  // ── Phase 1: Submit a bulk search form (with retries) ─────────────────────
+
+  async submitBulkJob(
+    keywords: string[],
+    location: string
+  ): Promise<{ viewUrl: string; keywordCount: number }> {
     let lastError: Error = new Error("Unknown error");
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       this.checkStopped();
-
       try {
-        return await this.doSearch(keywords, location);
+        return await this.doSubmit(keywords, location);
       } catch (err) {
-        if (err instanceof StoppedError) throw err;       // never retry a stop
-        if (err instanceof LocationNotFoundError) throw err; // never retry a missing city
+        if (err instanceof StoppedError)          throw err;
+        if (err instanceof LocationNotFoundError) throw err;
 
         lastError = err instanceof Error ? err : new Error(String(err));
-        console.error(`[d7-bulk] Attempt ${attempt}/${MAX_RETRIES} failed: ${lastError.message}`);
+        console.error(`[d7-bulk] Submit attempt ${attempt}/${MAX_RETRIES} failed: ${lastError.message}`);
 
-        await this.resetBrowser(); // fresh browser for next attempt
-
+        await this.resetBrowser();
         if (attempt < MAX_RETRIES) {
           const backoff = attempt * 3000;
           console.log(`[d7-bulk] Retrying in ${backoff / 1000}s…`);
@@ -151,60 +147,92 @@ export class D7BulkScraper implements IScraper {
       }
     }
 
-    // All retries exhausted — pause the queue so the user can investigate
     throw new PauseError(lastError.message);
   }
 
-  // ── Core search logic ─────────────────────────────────────────────────────
+  // ── Phase 2: Download results from a captured view URL (with retries) ──────
 
-  private async doSearch(keywords: string[], location: string): Promise<UniversalLead[]> {
+  async downloadBulkJob(viewUrl: string, keywordCount: number): Promise<UniversalLead[]> {
+    let lastError: Error = new Error("Unknown error");
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      this.checkStopped();
+      try {
+        return await this.doDownload(viewUrl, keywordCount);
+      } catch (err) {
+        if (err instanceof StoppedError) throw err;
+
+        lastError = err instanceof Error ? err : new Error(String(err));
+        console.error(`[d7-bulk] Download attempt ${attempt}/${MAX_RETRIES} failed: ${lastError.message}`);
+
+        await this.resetBrowser();
+        if (attempt < MAX_RETRIES) {
+          const backoff = attempt * 3000;
+          console.log(`[d7-bulk] Retrying download in ${backoff / 1000}s…`);
+          await new Promise((r) => setTimeout(r, backoff));
+        }
+      }
+    }
+
+    throw new PauseError(lastError.message);
+  }
+
+  // ── Core: fill + submit form, capture the view URL ────────────────────────
+
+  private async doSubmit(keywords: string[], location: string): Promise<{ viewUrl: string; keywordCount: number }> {
     const context = await this.getContext();
     const page    = await context.newPage();
 
     try {
-      // 1. Login
       this.checkStopped();
       await this.ensureLoggedIn(page);
       await page.waitForTimeout(800);
 
-      // Scope everything to the RIGHT panel: "1 City For Multiple Keywords"
       const panel = page.locator("div, section, form").filter({
         hasText: "Bulk Search 1 City For Multiple Keywords",
       }).last();
 
-      // 2. Select location (trigger inside panel; Select2 dropdown renders in body)
       this.checkStopped();
       await this.selectLocation(page, panel, location);
 
-      // 3. Fill keywords textarea (inside right panel)
       this.checkStopped();
       const textarea = panel.locator("textarea").first();
       await textarea.click();
       await textarea.fill(keywords.join("\n"));
 
-      // 4. Fill reference name (inside right panel)
       this.checkStopped();
-      const dateStr  = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-      const refName  = `${location} — ${dateStr}`;
+      const dateStr = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+      const refName = `${location} — ${dateStr}`;
       const refInput = panel.locator('input[type="text"]').last();
       await refInput.fill(refName);
 
-      // 5. Submit (inside right panel)
       this.checkStopped();
       await panel.locator('button:has-text("Fetch Leads")').click();
-      console.log(`[d7-bulk] Form submitted, waiting for D7 to redirect…`);
-      await page.waitForURL("**/bulk/view/**", { timeout: 180000 }); // 3 min — D7 can be slow
-      console.log(`[d7-bulk] Submitted → ${page.url()}`);
+      console.log(`[d7-bulk] Submitted ${location}, waiting for redirect…`);
+      await page.waitForURL("**/bulk/view/**", { timeout: 180000 });
 
-      // 6. Wait for D7 to process
-      await this.waitForProcessing(page, keywords.length);
+      const viewUrl = page.url();
+      console.log(`[d7-bulk] ${location} → ${viewUrl}`);
+      return { viewUrl, keywordCount: keywords.length };
 
-      // 7. Download CSV
+    } finally {
+      await page.close().catch(() => {});
+    }
+  }
+
+  // ── Core: navigate to a captured view URL, wait, download ─────────────────
+
+  private async doDownload(viewUrl: string, keywordCount: number): Promise<UniversalLead[]> {
+    const context = await this.getContext();
+    const page    = await context.newPage();
+
+    try {
+      await page.goto(viewUrl, { waitUntil: "domcontentloaded" });
+      await this.waitForProcessing(page, keywordCount);
       this.checkStopped();
       const results = await this.downloadCsv(page);
-      console.log(`[d7-bulk] Done — ${results.length} leads`);
+      console.log(`[d7-bulk] ${results.length} leads downloaded from ${viewUrl}`);
       return results;
-
     } finally {
       await page.close().catch(() => {});
     }
@@ -218,10 +246,7 @@ export class D7BulkScraper implements IScraper {
 
   private async ensureLoggedIn(page: Page): Promise<void> {
     await page.goto(BULK_URL, { waitUntil: "domcontentloaded" });
-
-    if (!this.isLoginPage(page.url())) return; // session is valid, already inside
-
-    // D7 has CAPTCHA — automated login is blocked. User must log in manually once.
+    if (!this.isLoginPage(page.url())) return;
     this.loginState = "error";
     throw new PauseError('D7 login required — click "Connect D7 Account" in the UI to authenticate');
   }
@@ -229,7 +254,6 @@ export class D7BulkScraper implements IScraper {
   // ── Location dropdown (Select2) ───────────────────────────────────────────
 
   private async selectLocation(page: Page, scope: Locator, location: string): Promise<void> {
-    // Trigger is inside the right panel; Select2 dropdown renders in <body>
     await scope.locator(".select2-container, .select2-selection").first().click();
     await page.waitForTimeout(400);
 
@@ -237,17 +261,14 @@ export class D7BulkScraper implements IScraper {
     await searchField.fill(location);
     await page.waitForTimeout(1500);
 
-    // Check for "no results" before trying to click
-    const noResults = page.locator(".select2-results__option--disabled, .select2-results__message");
+    const noResults   = page.locator(".select2-results__option--disabled, .select2-results__message");
     const firstOption = page.locator(".select2-results__option:not(.select2-results__option--disabled)").first();
 
-    // Wait up to 6s for either a valid option or a no-results message
     await Promise.race([
       firstOption.waitFor({ timeout: 6000 }),
       noResults.waitFor({ timeout: 6000 }),
     ]).catch(() => { throw new LocationNotFoundError(location); });
 
-    // If no valid option exists, the city wasn't found
     const hasOption = await firstOption.isVisible().catch(() => false);
     if (!hasOption) throw new LocationNotFoundError(location);
 
@@ -258,7 +279,7 @@ export class D7BulkScraper implements IScraper {
   // ── Wait for processing ───────────────────────────────────────────────────
 
   private async waitForProcessing(page: Page, keywordCount: number): Promise<void> {
-    const maxWait      = 30 * 60 * 1000; // 30 min
+    const maxWait      = 30 * 60 * 1000;
     const pollInterval = 15 * 1000;
     const start        = Date.now();
 

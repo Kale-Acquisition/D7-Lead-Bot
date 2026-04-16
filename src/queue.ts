@@ -28,7 +28,7 @@ export class JobQueue {
 
   stop(): void {
     this.stopped = true;
-    this.pauseReason = null; // manual stop has no auto-reason
+    this.pauseReason = null;
     for (const scraper of this.scrapers.values()) {
       if (scraper instanceof D7BulkScraper) scraper.stop();
     }
@@ -119,65 +119,187 @@ export class JobQueue {
     this.processing = true;
 
     while (this.pending.length > 0 && !this.stopped) {
-      const jobId = this.pending.shift()!;
-      const job   = this.jobs.get(jobId);
-      if (!job) continue;
+      const nextId  = this.pending[0];
+      const nextJob = this.jobs.get(nextId);
 
-      const scraper = this.scrapers.get(job.scraperId);
-      if (!scraper) {
-        job.status     = "failed";
-        job.error      = `Unknown scraper: ${job.scraperId}`;
-        job.finishedAt = Date.now();
-        continue;
-      }
+      if (!nextJob) { this.pending.shift(); continue; }
 
-      job.status    = "running";
-      job.startedAt = Date.now();
-
-      try {
-        job.results     = await scraper.search(job.keywords, job.location, job.country);
-        job.resultCount = job.results.length;
-        job.status      = "done";
-      } catch (err) {
-        if (err instanceof StoppedError) {
-          // User manually stopped — re-queue, halt loop
-          job.status = "queued";
-          this.pending.unshift(jobId);
-          break;
-
-        } else if (err instanceof PauseError) {
-          // Something went wrong (quota, network, crash) — re-queue, pause, show reason
-          job.status        = "queued";
-          this.pending.unshift(jobId);
-          this.stopped      = true;
-          this.pauseReason  = err.message;
-          console.warn(`[queue] Paused — ${err.message}`);
-          for (const s of this.scrapers.values()) {
-            if (s instanceof D7BulkScraper) s.stop();
-          }
-          break;
-
-        } else {
-          // Non-recoverable (e.g. LocationNotFoundError) — mark failed, continue queue
-          job.status     = "failed";
-          job.error      = err instanceof Error ? err.message : String(err);
-          job.finishedAt = Date.now();
-        }
-      } finally {
-        if (job.status !== "queued") job.finishedAt = Date.now();
-      }
-
-      // D7 Bulk Search requires 60s between submissions to avoid rate limiting
-      if (
-        job.scraperId === "d7-bulk" &&
-        this.pending.length > 0 &&
-        !this.stopped
-      ) {
-        console.log("[queue] Waiting 60s before next bulk search (D7 rate limit)…");
-        await new Promise((r) => setTimeout(r, 60000));
+      if (nextJob.scraperId === "d7-bulk") {
+        await this.processBulkBatch();
+      } else {
+        await this.processSingleJob();
       }
     }
 
     this.processing = false;
+  }
+
+  /** Process one non-bulk job from the front of the queue. */
+  private async processSingleJob(): Promise<void> {
+    const jobId = this.pending.shift()!;
+    const job   = this.jobs.get(jobId);
+    if (!job) return;
+
+    const scraper = this.scrapers.get(job.scraperId);
+    if (!scraper) {
+      job.status     = "failed";
+      job.error      = `Unknown scraper: ${job.scraperId}`;
+      job.finishedAt = Date.now();
+      return;
+    }
+
+    job.status    = "running";
+    job.startedAt = Date.now();
+
+    try {
+      job.results     = await scraper.search(job.keywords, job.location, job.country);
+      job.resultCount = job.results.length;
+      job.status      = "done";
+    } catch (err) {
+      if (err instanceof StoppedError) {
+        job.status = "queued";
+        this.pending.unshift(jobId);
+
+      } else if (err instanceof PauseError) {
+        job.status       = "queued";
+        this.pending.unshift(jobId);
+        this.stopped     = true;
+        this.pauseReason = err.message;
+        console.warn(`[queue] Paused — ${err.message}`);
+        for (const s of this.scrapers.values()) {
+          if (s instanceof D7BulkScraper) s.stop();
+        }
+
+      } else {
+        job.status     = "failed";
+        job.error      = err instanceof Error ? err.message : String(err);
+        job.finishedAt = Date.now();
+      }
+    } finally {
+      if (job.status !== "queued") job.finishedAt = Date.now();
+    }
+  }
+
+  /**
+   * Two-phase batch processor for d7-bulk jobs:
+   *
+   * Phase 1 — Submit every consecutive d7-bulk job (65 s apart).
+   *            D7 processes them all in parallel on their side.
+   *
+   * Phase 2 — Download results for each submitted search in sequence.
+   *            Results are combined automatically by getAllResults().
+   */
+  private async processBulkBatch(): Promise<void> {
+    const scraper = this.scrapers.get("d7-bulk");
+    if (!(scraper instanceof D7BulkScraper)) {
+      await this.processSingleJob();
+      return;
+    }
+
+    // Collect all consecutive pending d7-bulk job IDs
+    const batchIds: string[] = [];
+    for (const id of this.pending) {
+      if (this.jobs.get(id)?.scraperId === "d7-bulk") batchIds.push(id);
+      else break;
+    }
+
+    // Remove them all from pending upfront
+    this.pending.splice(0, batchIds.length);
+
+    // ── Phase 1: Submit all searches ────────────────────────────────────────
+
+    const submissions: Array<{ jobId: string; viewUrl: string; keywordCount: number }> = [];
+
+    for (let i = 0; i < batchIds.length; i++) {
+      if (this.stopped) break;
+
+      const jobId = batchIds[i];
+      const job   = this.jobs.get(jobId)!;
+      job.status    = "running";
+      job.startedAt = Date.now();
+
+      try {
+        const { viewUrl, keywordCount } = await scraper.submitBulkJob(job.keywords, job.location);
+        submissions.push({ jobId, viewUrl, keywordCount });
+        console.log(`[queue] Submitted ${i + 1}/${batchIds.length}: ${job.location}`);
+
+        // Wait 65 s before the next submission (D7 rate limit)
+        if (i < batchIds.length - 1 && !this.stopped) {
+          console.log("[queue] Waiting 65 s before next bulk submission…");
+          await new Promise((r) => setTimeout(r, 65000));
+        }
+
+      } catch (err) {
+        if (err instanceof StoppedError) {
+          // Re-queue this job and all not-yet-submitted ones
+          const requeue = [jobId, ...batchIds.slice(i + 1)];
+          for (const id of requeue) {
+            const j = this.jobs.get(id);
+            if (j) j.status = "queued";
+          }
+          this.pending.unshift(...requeue);
+          return; // this.stopped already set by stop()
+
+        } else if (err instanceof PauseError) {
+          const requeue = [jobId, ...batchIds.slice(i + 1)];
+          for (const id of requeue) {
+            const j = this.jobs.get(id);
+            if (j) j.status = "queued";
+          }
+          this.pending.unshift(...requeue);
+          this.stopped     = true;
+          this.pauseReason = err.message;
+          console.warn(`[queue] Paused — ${err.message}`);
+          scraper.stop();
+          return;
+
+        } else {
+          // LocationNotFoundError or other non-recoverable — fail, keep going
+          job.status     = "failed";
+          job.error      = err instanceof Error ? err.message : String(err);
+          job.finishedAt = Date.now();
+        }
+      }
+    }
+
+    if (this.stopped) return;
+
+    // ── Phase 2: Download results (D7 processed them in parallel) ────────────
+
+    console.log(`[queue] All ${submissions.length} searches submitted — now downloading results…`);
+
+    for (const { jobId, viewUrl, keywordCount } of submissions) {
+      if (this.stopped) break;
+
+      const job = this.jobs.get(jobId)!;
+
+      try {
+        job.results     = await scraper.downloadBulkJob(viewUrl, keywordCount);
+        job.resultCount = job.results.length;
+        job.status      = "done";
+        job.finishedAt  = Date.now();
+
+      } catch (err) {
+        if (err instanceof StoppedError) {
+          job.status     = "failed";
+          job.error      = "Stopped before results could be downloaded";
+          job.finishedAt = Date.now();
+
+        } else if (err instanceof PauseError) {
+          job.status     = "failed";
+          job.error      = `Download error: ${err.message}`;
+          job.finishedAt = Date.now();
+          this.stopped     = true;
+          this.pauseReason = err.message;
+          scraper.stop();
+          return;
+
+        } else {
+          job.status     = "failed";
+          job.error      = err instanceof Error ? err.message : String(err);
+          job.finishedAt = Date.now();
+        }
+      }
+    }
   }
 }

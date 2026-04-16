@@ -52,6 +52,25 @@ app.post("/api/queue/resume", (_req, res) => {
   res.json({ ok: true });
 });
 
+/** Start manual login flow (opens visible browser for CAPTCHA) */
+app.post("/api/auth/d7-bulk/start", (_req, res) => {
+  const scraper = queue.getScraper("d7-bulk") as D7BulkScraper | undefined;
+  if (!scraper) {
+    res.status(404).json({ error: "Bulk scraper not registered — set D7_EMAIL and D7_PASSWORD in .env" });
+    return;
+  }
+  // Fire-and-forget — browser opens, user solves CAPTCHA, session saved automatically
+  scraper.loginManually().catch((err) => console.error("[auth]", err.message));
+  res.json({ ok: true });
+});
+
+/** Get login status for bulk scraper */
+app.get("/api/auth/d7-bulk/status", (_req, res) => {
+  const scraper = queue.getScraper("d7-bulk") as D7BulkScraper | undefined;
+  if (!scraper) { res.json({ state: "unavailable", hasSession: false }); return; }
+  res.json(scraper.getLoginState());
+});
+
 /** List available scrapers */
 app.get("/api/scrapers", (_req, res) => {
   res.json(queue.listScrapers());

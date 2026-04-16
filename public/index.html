@@ -146,7 +146,17 @@
 
       <div class="form-group">
         <label>Source</label>
-        <select id="scraper"></select>
+        <select id="scraper" onchange="onScraperChange()"></select>
+      </div>
+
+      <!-- Shown only when D7 Bulk Search is selected -->
+      <div id="connect-panel" style="display:none;margin-bottom:14px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <span style="font-size:12px;font-weight:600;color:var(--muted);">D7 Account</span>
+          <span id="login-status-badge" style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:9999px;background:#1e2a3a;color:var(--muted);">Checking…</span>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="connect-btn" onclick="connectD7()" style="width:100%;justify-content:center;">🔑 Connect D7 Account</button>
+        <div id="connect-hint" style="font-size:11px;color:var(--muted);margin-top:6px;display:none;"></div>
       </div>
 
       <div class="btn-row">
@@ -260,6 +270,67 @@ async function loadScrapers() {
   const scrapers = await api('GET', '/api/scrapers');
   const sel = document.getElementById('scraper');
   sel.innerHTML = scrapers.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+  onScraperChange();
+}
+
+function onScraperChange() {
+  const scraperId = document.getElementById('scraper').value;
+  const panel = document.getElementById('connect-panel');
+  panel.style.display = scraperId === 'd7-bulk' ? 'block' : 'none';
+  if (scraperId === 'd7-bulk') refreshLoginStatus();
+}
+
+// ── D7 Account connect ────────────────────────────────────────────────────────
+let loginPolling = null;
+
+async function connectD7() {
+  const btn = document.getElementById('connect-btn');
+  const hint = document.getElementById('connect-hint');
+  btn.disabled = true;
+  hint.style.display = 'block';
+  hint.textContent = 'Browser opening… solve the CAPTCHA, then this updates automatically.';
+
+  try {
+    await api('POST', '/api/auth/d7-bulk/start');
+    // Poll status until connected or error
+    loginPolling = setInterval(async () => {
+      const s = await api('GET', '/api/auth/d7-bulk/status').catch(() => null);
+      if (!s) return;
+      updateLoginBadge(s);
+      if (s.state === 'connected' || s.state === 'error') {
+        clearInterval(loginPolling);
+        loginPolling = null;
+        btn.disabled = false;
+        hint.style.display = s.state === 'connected' ? 'none' : 'block';
+        if (s.state === 'error') hint.textContent = 'Error: ' + (s.error || 'Login failed');
+      }
+    }, 2000);
+  } catch (err) {
+    btn.disabled = false;
+    hint.textContent = 'Error: ' + err.message;
+  }
+}
+
+async function refreshLoginStatus() {
+  const s = await api('GET', '/api/auth/d7-bulk/status').catch(() => null);
+  if (s) updateLoginBadge(s);
+}
+
+function updateLoginBadge(s) {
+  const badge = document.getElementById('login-status-badge');
+  if (s.state === 'connected' || s.hasSession) {
+    badge.style.background = '#0f2a1a'; badge.style.color = '#22c55e';
+    badge.textContent = '✓ Connected';
+  } else if (s.state === 'waiting') {
+    badge.style.background = '#2a2000'; badge.style.color = '#eab308';
+    badge.textContent = '⟳ Waiting…';
+  } else if (s.state === 'error') {
+    badge.style.background = '#2a0f0f'; badge.style.color = '#ef4444';
+    badge.textContent = '✗ Not connected';
+  } else {
+    badge.style.background = '#1e2a3a'; badge.style.color = '#8892a4';
+    badge.textContent = s.hasSession ? '✓ Connected' : '✗ Not connected';
+  }
 }
 
 // ── Account badge ─────────────────────────────────────────────────────────────

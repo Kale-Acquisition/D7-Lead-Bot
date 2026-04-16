@@ -3,8 +3,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { IScraper, UniversalLead, PauseError, StoppedError } from "./types";
 
-const LOGIN_URL = "https://dash.d7leadfinder.com/app/login/";
-const BULK_URL  = "https://dash.d7leadfinder.com/app/bulk/";
+const LOGIN_URL    = "https://dash.d7leadfinder.com/auth/login/";
+const BULK_URL     = "https://dash.d7leadfinder.com/app/bulk/";
 const SESSION_FILE = path.join(process.cwd(), ".d7-session.json");
 const MAX_RETRIES  = 3;
 
@@ -18,13 +18,66 @@ export class D7BulkScraper implements IScraper {
 
   private browser: Browser | null       = null;
   private context: BrowserContext | null = null;
-  private stopped = false;
+  private stopped    = false;
+  private loginState: "idle" | "waiting" | "connected" | "error" = "idle";
+  private loginError: string | null = null;
 
   constructor(
     private email: string,
     private password: string,
     private headless = true          // invisible by default — no window interference
   ) {}
+
+  // ── Manual login (for CAPTCHA) ────────────────────────────────────────────
+
+  /** Opens a visible browser so the user can solve the CAPTCHA once.
+   *  Credentials are pre-filled — user only needs to solve CAPTCHA and submit. */
+  async loginManually(): Promise<void> {
+    this.loginState = "waiting";
+    this.loginError = null;
+
+    const visibleBrowser = await chromium.launch({ headless: false });
+    const ctx  = await visibleBrowser.newContext();
+    const page = await ctx.newPage();
+
+    try {
+      await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
+
+      // Pre-fill credentials so user only needs to handle the CAPTCHA
+      await page.fill('input[type="email"], input[name="email"], input[name="username"]', this.email).catch(() => {});
+      await page.fill('input[type="password"], input[name="password"]', this.password).catch(() => {});
+
+      console.log("[d7-bulk] Browser opened — waiting for you to solve the CAPTCHA…");
+
+      // Wait up to 5 minutes for the user to complete login
+      await page.waitForURL(
+        (url) => !url.toString().includes("/login/") && !url.toString().includes("/auth/"),
+        { timeout: 5 * 60 * 1000 }
+      );
+
+      // Save session so future headless runs skip login entirely
+      const state = await ctx.storageState();
+      fs.writeFileSync(SESSION_FILE, JSON.stringify(state));
+      this.loginState = "connected";
+      console.log("[d7-bulk] Login successful — session saved.");
+
+    } catch (err) {
+      this.loginState = "error";
+      this.loginError = err instanceof Error ? err.message : String(err);
+      throw err;
+    } finally {
+      await page.close().catch(() => {});
+      await visibleBrowser.close().catch(() => {});
+    }
+  }
+
+  getLoginState(): { state: string; hasSession: boolean; error?: string } {
+    return {
+      state:      this.loginState,
+      hasSession: fs.existsSync(SESSION_FILE),
+      error:      this.loginError ?? undefined,
+    };
+  }
 
   // ── Stop control ──────────────────────────────────────────────────────────
 
@@ -70,11 +123,6 @@ export class D7BulkScraper implements IScraper {
     this.context  = null;
   }
 
-  private async saveSession(): Promise<void> {
-    if (!this.context) return;
-    const state = await this.context.storageState();
-    fs.writeFileSync(SESSION_FILE, JSON.stringify(state));
-  }
 
   // ── Public search (with retries + crash recovery) ─────────────────────────
 
@@ -158,30 +206,18 @@ export class D7BulkScraper implements IScraper {
 
   // ── Login ─────────────────────────────────────────────────────────────────
 
+  private isLoginPage(url: string): boolean {
+    return url.includes("/login/") || url.includes("/auth/");
+  }
+
   private async ensureLoggedIn(page: Page): Promise<void> {
     await page.goto(BULK_URL, { waitUntil: "domcontentloaded" });
 
-    if (!page.url().includes("/login/")) return; // already logged in
+    if (!this.isLoginPage(page.url())) return; // session is valid, already inside
 
-    // Fill credentials
-    await page.fill('input[type="email"], input[name="email"], input[name="username"]', this.email);
-    const passwordField = page.locator('input[type="password"], input[name="password"]').first();
-    await passwordField.fill(this.password);
-
-    // Try clicking submit button; fall back to pressing Enter
-    const submitBtn = page.locator(
-      'button[type="submit"], input[type="submit"], button:has-text("Login"), button:has-text("Sign in"), button:has-text("Log in")'
-    ).first();
-    const btnVisible = await submitBtn.isVisible().catch(() => false);
-    if (btnVisible) {
-      await submitBtn.click();
-    } else {
-      await passwordField.press("Enter");
-    }
-
-    await page.waitForURL("**/app/**", { timeout: 20000 });
-    await this.saveSession();
-    await page.goto(BULK_URL, { waitUntil: "domcontentloaded" });
+    // D7 has CAPTCHA — automated login is blocked. User must log in manually once.
+    this.loginState = "error";
+    throw new PauseError('D7 login required — click "Connect D7 Account" in the UI to authenticate');
   }
 
   // ── Location dropdown (Select2) ───────────────────────────────────────────

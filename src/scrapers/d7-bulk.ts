@@ -163,10 +163,23 @@ export class D7BulkScraper implements IScraper {
 
     if (!page.url().includes("/login/")) return; // already logged in
 
+    // Fill credentials
     await page.fill('input[type="email"], input[name="email"], input[name="username"]', this.email);
-    await page.fill('input[type="password"], input[name="password"]', this.password);
-    await page.click('button[type="submit"], input[type="submit"]');
-    await page.waitForURL("**/app/**", { timeout: 15000 });
+    const passwordField = page.locator('input[type="password"], input[name="password"]').first();
+    await passwordField.fill(this.password);
+
+    // Try clicking submit button; fall back to pressing Enter
+    const submitBtn = page.locator(
+      'button[type="submit"], input[type="submit"], button:has-text("Login"), button:has-text("Sign in"), button:has-text("Log in")'
+    ).first();
+    const btnVisible = await submitBtn.isVisible().catch(() => false);
+    if (btnVisible) {
+      await submitBtn.click();
+    } else {
+      await passwordField.press("Enter");
+    }
+
+    await page.waitForURL("**/app/**", { timeout: 20000 });
     await this.saveSession();
     await page.goto(BULK_URL, { waitUntil: "domcontentloaded" });
   }

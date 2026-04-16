@@ -279,22 +279,27 @@ export class D7BulkScraper implements IScraper {
   // ── Wait for processing ───────────────────────────────────────────────────
 
   private async waitForProcessing(page: Page, keywordCount: number): Promise<void> {
-    const maxWait      = 30 * 60 * 1000;
-    const pollInterval = 15 * 1000;
+    const maxWait      = 4 * 60 * 60 * 1000; // 4 hours — keep retrying until done
+    const pollInterval = 5 * 60 * 1000;       // check every 5 minutes
     const start        = Date.now();
+    let   attempt      = 0;
 
-    console.log(`[d7-bulk] Waiting for ${keywordCount} keyword(s) to process…`);
+    console.log(`[d7-bulk] Waiting for ${keywordCount} keyword(s) to process (checking every 5 min)…`);
 
     while (Date.now() - start < maxWait) {
       this.checkStopped();
 
+      attempt++;
+      console.log(`[d7-bulk] Waiting 5 min before checking… (attempt ${attempt})`);
       await page.waitForTimeout(pollInterval);
       await page.reload({ waitUntil: "domcontentloaded" });
 
       const doneRows = await page.locator('a:has-text("View Single List")').count();
-      console.log(`[d7-bulk]   ${doneRows}/${keywordCount} done`);
+      console.log(`[d7-bulk]   ${doneRows}/${keywordCount} keyword(s) ready`);
 
       if (doneRows >= keywordCount) return;
+
+      console.log(`[d7-bulk]   Still processing — will check again in 5 min…`);
     }
 
     throw new Error(`Timed out waiting for D7 to process ${keywordCount} keywords`);

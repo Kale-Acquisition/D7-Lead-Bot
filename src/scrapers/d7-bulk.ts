@@ -1,4 +1,4 @@
-import { chromium, Browser, BrowserContext, Page } from "playwright";
+import { chromium, Browser, BrowserContext, Page, Locator } from "playwright";
 import * as fs from "fs";
 import * as path from "path";
 import { IScraper, UniversalLead, PauseError, StoppedError } from "./types";
@@ -167,26 +167,31 @@ export class D7BulkScraper implements IScraper {
       await this.ensureLoggedIn(page);
       await page.waitForTimeout(800);
 
-      // 2. Select location
-      this.checkStopped();
-      await this.selectLocation(page, location);
+      // Scope everything to the RIGHT panel: "1 City For Multiple Keywords"
+      const panel = page.locator("div, section, form").filter({
+        hasText: "Bulk Search 1 City For Multiple Keywords",
+      }).last();
 
-      // 3. Fill keywords
+      // 2. Select location (trigger inside panel; Select2 dropdown renders in body)
       this.checkStopped();
-      const textarea = page.locator("textarea").first();
+      await this.selectLocation(page, panel, location);
+
+      // 3. Fill keywords textarea (inside right panel)
+      this.checkStopped();
+      const textarea = panel.locator("textarea").first();
       await textarea.click();
       await textarea.fill(keywords.join("\n"));
 
-      // 4. Fill reference name
+      // 4. Fill reference name (inside right panel)
       this.checkStopped();
       const dateStr  = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
       const refName  = `${location} — ${dateStr}`;
-      const refInput = page.locator('input[type="text"]').last();
+      const refInput = panel.locator('input[type="text"]').last();
       await refInput.fill(refName);
 
-      // 5. Submit
+      // 5. Submit (inside right panel)
       this.checkStopped();
-      await page.click('button:has-text("Fetch Leads"), input[value*="Fetch"]');
+      await panel.locator('button:has-text("Fetch Leads")').click();
       await page.waitForURL("**/bulk/view/**", { timeout: 30000 });
       console.log(`[d7-bulk] Submitted → ${page.url()}`);
 
@@ -222,8 +227,9 @@ export class D7BulkScraper implements IScraper {
 
   // ── Location dropdown (Select2) ───────────────────────────────────────────
 
-  private async selectLocation(page: Page, location: string): Promise<void> {
-    await page.locator(".select2-container, .select2-selection").first().click();
+  private async selectLocation(page: Page, scope: Locator, location: string): Promise<void> {
+    // Trigger is inside the right panel; Select2 dropdown renders in <body>
+    await scope.locator(".select2-container, .select2-selection").first().click();
     await page.waitForTimeout(400);
 
     const searchField = page.locator(".select2-search__field, .select2-search input").first();

@@ -208,7 +208,7 @@ export class JobQueue {
 
     // ── Phase 1: Submit all searches ────────────────────────────────────────
 
-    const submissions: Array<{ jobId: string; viewUrl: string; keywordCount: number }> = [];
+    const submissions: Array<{ jobId: string; refName: string; keywordCount: number }> = [];
 
     for (let i = 0; i < batchIds.length; i++) {
       if (this.stopped) break;
@@ -219,8 +219,8 @@ export class JobQueue {
       job.startedAt = Date.now();
 
       try {
-        const { viewUrl, keywordCount } = await scraper.submitBulkJob(job.keywords, job.location);
-        submissions.push({ jobId, viewUrl, keywordCount });
+        const { refName, keywordCount } = await scraper.submitBulkJob(job.keywords, job.location);
+        submissions.push({ jobId, refName, keywordCount });
         console.log(`[queue] Submitted ${i + 1}/${batchIds.length}: ${job.location}`);
 
         // Wait 65 s before the next submission (D7 rate limit)
@@ -268,13 +268,13 @@ export class JobQueue {
 
     console.log(`[queue] All ${submissions.length} searches submitted — now downloading results…`);
 
-    for (const { jobId, viewUrl, keywordCount } of submissions) {
+    for (const { jobId, refName, keywordCount } of submissions) {
       if (this.stopped) break;
 
       const job = this.jobs.get(jobId)!;
 
       try {
-        job.results     = await scraper.downloadBulkJob(viewUrl, keywordCount);
+        job.results     = await scraper.downloadBulkJob(refName, keywordCount);
         job.resultCount = job.results.length;
         job.status      = "done";
         job.finishedAt  = Date.now();

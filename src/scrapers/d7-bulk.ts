@@ -5,6 +5,7 @@ import { IScraper, UniversalLead, PauseError, StoppedError } from "./types";
 
 const LOGIN_URL    = "https://dash.d7leadfinder.com/auth/login/";
 const BULK_URL     = "https://dash.d7leadfinder.com/app/bulk/";
+const HISTORY_URL  = "https://dash.d7leadfinder.com/app/history/";
 const SESSION_FILE = path.join(process.cwd(), ".d7-session.json");
 const MAX_RETRIES  = 3;
 
@@ -112,19 +113,19 @@ export class D7BulkScraper implements IScraper {
     this.context  = null;
   }
 
-  // ── IScraper: single-call search (used by non-batch path) ─────────────────
+  // ── IScraper: single-call search (submit + download in one go) ────────────
 
   async search(keywords: string[], location: string, _country = "US"): Promise<UniversalLead[]> {
-    const { viewUrl, keywordCount } = await this.submitBulkJob(keywords, location);
-    return await this.downloadBulkJob(viewUrl, keywordCount);
+    const { refName, keywordCount } = await this.submitBulkJob(keywords, location);
+    return await this.downloadBulkJob(refName, keywordCount);
   }
 
-  // ── Phase 1: Submit a bulk search form (with retries) ─────────────────────
+  // ── Phase 1: Submit bulk search form, capture reference name (with retries) ─
 
   async submitBulkJob(
     keywords: string[],
     location: string
-  ): Promise<{ viewUrl: string; keywordCount: number }> {
+  ): Promise<{ refName: string; keywordCount: number }> {
     let lastError: Error = new Error("Unknown error");
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -150,15 +151,15 @@ export class D7BulkScraper implements IScraper {
     throw new PauseError(lastError.message);
   }
 
-  // ── Phase 2: Download results from a captured view URL (with retries) ──────
+  // ── Phase 2: Poll history page until search is ready, then download ────────
 
-  async downloadBulkJob(viewUrl: string, keywordCount: number): Promise<UniversalLead[]> {
+  async downloadBulkJob(refName: string, keywordCount: number): Promise<UniversalLead[]> {
     let lastError: Error = new Error("Unknown error");
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       this.checkStopped();
       try {
-        return await this.doDownload(viewUrl, keywordCount);
+        return await this.doDownload(refName, keywordCount);
       } catch (err) {
         if (err instanceof StoppedError) throw err;
 
@@ -177,9 +178,12 @@ export class D7BulkScraper implements IScraper {
     throw new PauseError(lastError.message);
   }
 
-  // ── Core: fill + submit form, capture the view URL ────────────────────────
+  // ── Core: fill + submit form ───────────────────────────────────────────────
 
-  private async doSubmit(keywords: string[], location: string): Promise<{ viewUrl: string; keywordCount: number }> {
+  private async doSubmit(
+    keywords: string[],
+    location: string
+  ): Promise<{ refName: string; keywordCount: number }> {
     const context = await this.getContext();
     const page    = await context.newPage();
 
@@ -201,38 +205,87 @@ export class D7BulkScraper implements IScraper {
       await textarea.fill(keywords.join("\n"));
 
       this.checkStopped();
-      const dateStr = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-      const refName = `${location} — ${dateStr}`;
+      // Include time so each submission has a unique, findable reference name
+      const now     = new Date();
+      const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+      const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+      const refName = `${location} — ${dateStr} ${timeStr}`;
+
       const refInput = panel.locator('input[type="text"]').last();
       await refInput.fill(refName);
 
       this.checkStopped();
       await panel.locator('button:has-text("Fetch Leads")').click();
-      console.log(`[d7-bulk] Submitted ${location}, waiting for redirect…`);
-      await page.waitForURL("**/bulk/view/**", { timeout: 180000 });
+      console.log(`[d7-bulk] Submitted "${refName}", waiting for D7 to redirect…`);
 
-      const viewUrl = page.url();
-      console.log(`[d7-bulk] ${location} → ${viewUrl}`);
-      return { viewUrl, keywordCount: keywords.length };
+      // D7 redirects to /history/ or /bulk/view/ after submission — accept either
+      await page.waitForURL(
+        (url) => {
+          const s = url.toString();
+          return s.includes("/bulk/view/") || s.includes("/history/");
+        },
+        { timeout: 180000 }
+      );
+
+      console.log(`[d7-bulk] Redirect confirmed → ${page.url()}`);
+      return { refName, keywordCount: keywords.length };
 
     } finally {
       await page.close().catch(() => {});
     }
   }
 
-  // ── Core: navigate to a captured view URL, wait, download ─────────────────
+  // ── Core: poll history page, click View when ready, download CSV ───────────
 
-  private async doDownload(viewUrl: string, keywordCount: number): Promise<UniversalLead[]> {
+  private async doDownload(refName: string, keywordCount: number): Promise<UniversalLead[]> {
     const context = await this.getContext();
     const page    = await context.newPage();
 
     try {
-      await page.goto(viewUrl, { waitUntil: "domcontentloaded" });
-      await this.waitForProcessing(page, keywordCount);
-      this.checkStopped();
-      const results = await this.downloadCsv(page);
-      console.log(`[d7-bulk] ${results.length} leads downloaded from ${viewUrl}`);
-      return results;
+      const maxWait      = 4 * 60 * 60 * 1000; // 4 hours max
+      const pollInterval = 5 * 60 * 1000;       // check every 5 minutes
+      const start        = Date.now();
+      let   attempt      = 0;
+
+      console.log(`[d7-bulk] Waiting for "${refName}" to finish on D7…`);
+
+      while (Date.now() - start < maxWait) {
+        this.checkStopped();
+
+        // Go to history page and look for the green View button on this search
+        await page.goto(HISTORY_URL, { waitUntil: "domcontentloaded" });
+
+        const row      = page.locator("tr").filter({ hasText: refName }).first();
+        const viewLink = row.locator("a").filter({ hasText: "View" }).first();
+
+        if (await viewLink.isVisible().catch(() => false)) {
+          // Extract href and navigate directly (avoids new-tab issues)
+          const href = await viewLink.getAttribute("href").catch(() => null);
+          if (!href) throw new Error(`No href on View link for "${refName}"`);
+
+          const viewUrl = href.startsWith("http")
+            ? href
+            : `https://dash.d7leadfinder.com${href}`;
+
+          console.log(`[d7-bulk] "${refName}" ready → ${viewUrl}`);
+          await page.goto(viewUrl, { waitUntil: "domcontentloaded" });
+
+          // Safety wait: ensure all keyword rows are fully rendered before downloading
+          await this.waitForViewPage(page, keywordCount);
+
+          this.checkStopped();
+          const results = await this.downloadCsv(page);
+          console.log(`[d7-bulk] Downloaded ${results.length} leads for "${refName}"`);
+          return results;
+        }
+
+        attempt++;
+        console.log(`[d7-bulk] "${refName}" still processing — waiting 5 min… (attempt ${attempt})`);
+        await page.waitForTimeout(pollInterval);
+      }
+
+      throw new Error(`Timed out waiting for "${refName}" to complete`);
+
     } finally {
       await page.close().catch(() => {});
     }
@@ -276,33 +329,22 @@ export class D7BulkScraper implements IScraper {
     await page.waitForTimeout(400);
   }
 
-  // ── Wait for processing ───────────────────────────────────────────────────
+  // ── Safety check on the view page before downloading ─────────────────────
 
-  private async waitForProcessing(page: Page, keywordCount: number): Promise<void> {
-    const maxWait      = 4 * 60 * 60 * 1000; // 4 hours — keep retrying until done
-    const pollInterval = 5 * 60 * 1000;       // check every 5 minutes
+  private async waitForViewPage(page: Page, keywordCount: number): Promise<void> {
+    const maxWait      = 5 * 60 * 1000; // 5 min safety window
+    const pollInterval = 15 * 1000;
     const start        = Date.now();
-    let   attempt      = 0;
-
-    console.log(`[d7-bulk] Waiting for ${keywordCount} keyword(s) to process (checking every 5 min)…`);
 
     while (Date.now() - start < maxWait) {
       this.checkStopped();
-
-      attempt++;
-      console.log(`[d7-bulk] Waiting 5 min before checking… (attempt ${attempt})`);
+      const doneRows = await page.locator('a:has-text("View Single List")').count();
+      if (doneRows >= keywordCount) return;
       await page.waitForTimeout(pollInterval);
       await page.reload({ waitUntil: "domcontentloaded" });
-
-      const doneRows = await page.locator('a:has-text("View Single List")').count();
-      console.log(`[d7-bulk]   ${doneRows}/${keywordCount} keyword(s) ready`);
-
-      if (doneRows >= keywordCount) return;
-
-      console.log(`[d7-bulk]   Still processing — will check again in 5 min…`);
     }
-
-    throw new Error(`Timed out waiting for D7 to process ${keywordCount} keywords`);
+    // Non-fatal — proceed anyway and let downloadCsv fail if truly broken
+    console.warn(`[d7-bulk] waitForViewPage: only found some rows after 5 min — attempting download anyway`);
   }
 
   // ── Download CSV ──────────────────────────────────────────────────────────

@@ -249,11 +249,14 @@ export class D7BulkScraper implements IScraper {
       while (Date.now() - start < maxWait) {
         this.checkStopped();
 
-        // Go to history page and look for the green View button on this search
+        // Go to history page and look for the green View button on this search.
+        // D7 reformats our refName in the history list (e.g. drops the dash,
+        // uppercases the month), so match by the location part only.
         await page.goto(HISTORY_URL, { waitUntil: "domcontentloaded" });
 
-        const row      = page.locator("tr").filter({ hasText: refName }).first();
-        const viewLink = row.locator("a").filter({ hasText: "View" }).first();
+        const locationPart = refName.split(" — ")[0]; // e.g. "Bluffton, SC"
+        const row      = page.locator("tr").filter({ hasText: locationPart }).first();
+        const viewLink = row.locator('a[href*="/bulk/view/"], a:has-text("View")').first();
 
         if (await viewLink.isVisible().catch(() => false)) {
           // Extract href and navigate directly (avoids new-tab issues)

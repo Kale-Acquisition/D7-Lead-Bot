@@ -215,16 +215,22 @@ export class D7BulkScraper implements IScraper {
       await panel.locator('button:has-text("Fetch Leads")').click();
       console.log(`[d7-bulk] Submitted "${refName}", waiting for D7 to redirect…`);
 
-      // D7 redirects to /history/ or /bulk/view/ after submission — accept either
+      // D7 redirects to /history/, /bulk/view/, or /bulk/process/multi_keyword.php
+      // (the last one means the city wasn't found — fail fast, don't retry)
       await page.waitForURL(
         (url) => {
           const s = url.toString();
-          return s.includes("/bulk/view/") || s.includes("/history/");
+          return s.includes("/bulk/view/") || s.includes("/history/") || s.includes("/bulk/process/");
         },
         { timeout: 180000 }
       );
 
-      console.log(`[d7-bulk] Redirect confirmed → ${page.url()}`);
+      const finalUrl = page.url();
+      if (finalUrl.includes("/bulk/process/")) {
+        throw new LocationNotFoundError(location);
+      }
+
+      console.log(`[d7-bulk] Redirect confirmed → ${finalUrl}`);
       return { refName, keywordCount: keywords.length };
 
     } finally {

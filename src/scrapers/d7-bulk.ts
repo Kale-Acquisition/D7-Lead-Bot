@@ -88,7 +88,12 @@ export class D7BulkScraper implements IScraper {
 
   private async getContext(): Promise<BrowserContext> {
     if (!this.browser || !this.browser.isConnected()) {
-      this.browser = await chromium.launch({ headless: this.headless });
+      this.browser = await chromium.launch({
+        headless: this.headless,
+        // When visible, start minimised so it sits in the taskbar without
+        // popping up — user can click the taskbar icon to bring it up
+        args: this.headless ? [] : ["--start-minimized"],
+      });
       this.context = null;
     }
     if (!this.context) {

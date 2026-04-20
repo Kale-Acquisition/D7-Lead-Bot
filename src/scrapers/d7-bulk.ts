@@ -190,7 +190,8 @@ export class D7BulkScraper implements IScraper {
     try {
       this.checkStopped();
       await this.ensureLoggedIn(page);
-      await page.waitForTimeout(800);
+      // Extra wait for Select2 widgets to fully initialise (important in headless mode)
+      await page.waitForTimeout(2000);
 
       const panel = page.locator("div, section, form").filter({
         hasText: "Bulk Search 1 City For Multiple Keywords",
@@ -313,7 +314,10 @@ export class D7BulkScraper implements IScraper {
   // ── Location dropdown (Select2) ───────────────────────────────────────────
 
   private async selectLocation(page: Page, scope: Locator, location: string): Promise<void> {
-    await scope.locator(".select2-container, .select2-selection").first().click();
+    // Wait for Select2 to be visible and stable before clicking
+    const trigger = scope.locator(".select2-container, .select2-selection").first();
+    await trigger.waitFor({ state: "visible", timeout: 30000 });
+    await trigger.click();
     await page.waitForTimeout(400);
 
     const searchField = page.locator(".select2-search__field, .select2-search input").first();

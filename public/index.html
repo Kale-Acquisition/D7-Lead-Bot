@@ -98,6 +98,13 @@
     .stars { color: var(--yellow); }
     .empty-results { color: var(--muted); text-align: center; padding: 48px; font-size: 14px; }
 
+    /* ── Pagination ── */
+    .pagination { background: var(--surface); border-top: 1px solid var(--border); padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; flex-shrink: 0; }
+    .pagination button { padding: 5px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface2); color: var(--text); cursor: pointer; font-size: 13px; }
+    .pagination button:disabled { opacity: .35; cursor: not-allowed; }
+    .pagination button:not(:disabled):hover { border-color: var(--accent); color: var(--accent); }
+    .page-info { color: var(--muted); }
+
     /* ── Scrollbar ── */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -207,6 +214,12 @@
         </tbody>
       </table>
     </div>
+
+    <div class="pagination">
+      <button id="pg-prev" onclick="changePage(-1)" disabled>← Prev</button>
+      <span class="page-info" id="pg-info">—</span>
+      <button id="pg-next" onclick="changePage(1)" disabled>Next →</button>
+    </div>
   </div>
 
 </div>
@@ -215,6 +228,9 @@
 // ── State ────────────────────────────────────────────────────────────────────
 let allResults = [];
 let queueStopped = false;
+let currentPage = 0;
+const PAGE_SIZE = 100;
+let lastResultCount = -1; // track to avoid unnecessary re-renders
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
@@ -379,23 +395,36 @@ async function pollJobs() {
   const jobs = await api('GET', '/api/jobs');
   renderJobs(jobs);
 
-  // Fetch results when any job is done
-  const hasDone = jobs.some(j => j.status === 'done');
-  if (hasDone) {
+  // Only re-fetch results when the total done count changes
+  const doneCount = jobs.reduce((n, j) => n + (j.status === 'done' ? j.resultCount : 0), 0);
+  if (doneCount !== lastResultCount) {
+    lastResultCount = doneCount;
     allResults = await api('GET', '/api/results');
+    currentPage = 0;
     renderResults(allResults);
   }
+}
+
+// ── Pagination ────────────────────────────────────────────────────────────────
+function changePage(dir) {
+  const totalPages = Math.ceil(allResults.length / PAGE_SIZE);
+  currentPage = Math.max(0, Math.min(currentPage + dir, totalPages - 1));
+  renderResults(allResults);
+  document.querySelector('.table-wrap').scrollTop = 0;
 }
 
 // ── Clear ─────────────────────────────────────────────────────────────────────
 async function clearCompleted() {
   await api('DELETE', '/api/jobs/completed');
+  lastResultCount = -1;
   await pollJobs();
 }
 async function clearAll() {
   if (!confirm('Clear all jobs and results?')) return;
   await api('DELETE', '/api/jobs');
   allResults = [];
+  lastResultCount = -1;
+  currentPage = 0;
   renderResults([]);
   await pollJobs();
 }
@@ -429,18 +458,31 @@ function statusLabel(job) {
   return '✗ failed';
 }
 
-// ── Render results ────────────────────────────────────────────────────────────
+// ── Render results (paginated) ────────────────────────────────────────────────
 function renderResults(results) {
-  const count = document.getElementById('result-count');
-  const tbody = document.getElementById('results-body');
-  count.textContent = `${results.length} lead${results.length !== 1 ? 's' : ''}`;
+  const count  = document.getElementById('result-count');
+  const tbody  = document.getElementById('results-body');
+  const pgInfo = document.getElementById('pg-info');
+  const pgPrev = document.getElementById('pg-prev');
+  const pgNext = document.getElementById('pg-next');
+
+  count.textContent = `${results.length.toLocaleString()} lead${results.length !== 1 ? 's' : ''}`;
 
   if (!results.length) {
     tbody.innerHTML = '<tr><td colspan="9" class="empty-results">Results will appear here as jobs complete.</td></tr>';
+    pgInfo.textContent = '—';
+    pgPrev.disabled = true;
+    pgNext.disabled = true;
     return;
   }
 
-  tbody.innerHTML = results.map(r => `<tr>
+  const totalPages = Math.ceil(results.length / PAGE_SIZE);
+  currentPage = Math.min(currentPage, totalPages - 1);
+
+  const start = currentPage * PAGE_SIZE;
+  const page  = results.slice(start, start + PAGE_SIZE);
+
+  tbody.innerHTML = page.map(r => `<tr>
     <td title="${esc(r.name)}">${esc(r.name)}</td>
     <td>${esc(r.phone)}</td>
     <td>${esc(r.email)}</td>
@@ -451,6 +493,10 @@ function renderResults(results) {
     <td class="stars">${esc(r.yelpStars)} <small style="color:var(--muted)">(${esc(r.yelpCount)})</small></td>
     <td class="stars">${esc(r.fbStars)} <small style="color:var(--muted)">(${esc(r.fbCount)})</small></td>
   </tr>`).join('');
+
+  pgInfo.textContent = `Page ${currentPage + 1} of ${totalPages} (${start + 1}–${Math.min(start + PAGE_SIZE, results.length)} of ${results.length.toLocaleString()})`;
+  pgPrev.disabled = currentPage === 0;
+  pgNext.disabled = currentPage >= totalPages - 1;
 }
 
 // ── Export CSV ────────────────────────────────────────────────────────────────

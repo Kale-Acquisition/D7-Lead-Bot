@@ -4,3 +4,5 @@ dist/
 .claude/
 .d7-session.json
 .tmp-bulk-download.csv
+*.csv
+*.plan.md

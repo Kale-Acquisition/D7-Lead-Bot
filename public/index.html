@@ -196,19 +196,7 @@
 
     <div class="table-wrap">
       <table id="results-table">
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Phone</th>
-            <th>Email</th>
-            <th>Website</th>
-            <th>Address</th>
-            <th>Category</th>
-            <th>Google ★</th>
-            <th>Yelp ★</th>
-            <th>FB ★</th>
-          </tr>
-        </thead>
+        <thead><tr></tr></thead>
         <tbody id="results-body">
           <tr><td colspan="9" class="empty-results">Results will appear here as jobs complete.</td></tr>
         </tbody>
@@ -227,6 +215,7 @@
 <script>
 // ── State ────────────────────────────────────────────────────────────────────
 let allResults = [];
+let allColumns = [];
 let queueStopped = false;
 let currentPage = 0;
 const PAGE_SIZE = 100;
@@ -458,9 +447,10 @@ function statusLabel(job) {
   return '✗ failed';
 }
 
-// ── Render results (paginated) ────────────────────────────────────────────────
+// ── Render results (paginated, all columns dynamic) ───────────────────────────
 function renderResults(results) {
   const count  = document.getElementById('result-count');
+  const thead  = document.querySelector('#results-table thead tr');
   const tbody  = document.getElementById('results-body');
   const pgInfo = document.getElementById('pg-info');
   const pgPrev = document.getElementById('pg-prev');
@@ -469,30 +459,37 @@ function renderResults(results) {
   count.textContent = `${results.length.toLocaleString()} lead${results.length !== 1 ? 's' : ''}`;
 
   if (!results.length) {
-    tbody.innerHTML = '<tr><td colspan="9" class="empty-results">Results will appear here as jobs complete.</td></tr>';
+    thead.innerHTML = '<th>Name</th><th>Phone</th><th>Email</th><th>Website</th><th>Address</th><th>Category</th>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-results">Results will appear here as jobs complete.</td></tr>';
     pgInfo.textContent = '—';
     pgPrev.disabled = true;
     pgNext.disabled = true;
     return;
   }
 
+  // Derive column list from all results (preserve insertion order, deduplicate)
+  const colSet = new Map();
+  for (const r of results) Object.keys(r).forEach(k => colSet.set(k, true));
+  allColumns = Array.from(colSet.keys());
+
+  // Render header
+  thead.innerHTML = allColumns.map(c => `<th>${esc(c)}</th>`).join('');
+
+  // Paginate
   const totalPages = Math.ceil(results.length / PAGE_SIZE);
   currentPage = Math.min(currentPage, totalPages - 1);
-
   const start = currentPage * PAGE_SIZE;
   const page  = results.slice(start, start + PAGE_SIZE);
 
-  tbody.innerHTML = page.map(r => `<tr>
-    <td title="${esc(r.name)}">${esc(r.name)}</td>
-    <td>${esc(r.phone)}</td>
-    <td>${esc(r.email)}</td>
-    <td>${r.website ? `<a href="${esc(r.website)}" target="_blank">${esc(r.website)}</a>` : ''}</td>
-    <td title="${esc(r.address)}">${esc(r.address)}</td>
-    <td>${esc(r.category)}</td>
-    <td class="stars">${esc(r.googleStars)} <small style="color:var(--muted)">(${esc(r.googleCount)})</small></td>
-    <td class="stars">${esc(r.yelpStars)} <small style="color:var(--muted)">(${esc(r.yelpCount)})</small></td>
-    <td class="stars">${esc(r.fbStars)} <small style="color:var(--muted)">(${esc(r.fbCount)})</small></td>
-  </tr>`).join('');
+  // Render rows — only current page (100 rows), never all at once
+  tbody.innerHTML = page.map(r => {
+    const cells = allColumns.map(c => {
+      const v = r[c] ?? '';
+      const isUrl = v.startsWith('http');
+      return `<td title="${esc(v)}">${isUrl ? `<a href="${esc(v)}" target="_blank">${esc(v)}</a>` : esc(v)}</td>`;
+    }).join('');
+    return `<tr>${cells}</tr>`;
+  }).join('');
 
   pgInfo.textContent = `Page ${currentPage + 1} of ${totalPages} (${start + 1}–${Math.min(start + PAGE_SIZE, results.length)} of ${results.length.toLocaleString()})`;
   pgPrev.disabled = currentPage === 0;

@@ -385,32 +385,16 @@ export class D7BulkScraper implements IScraper {
     const lines = csv.trim().split("\n").filter(Boolean);
     if (lines.length < 2) return [];
 
-    const headers = this.splitCsvLine(lines[0]).map((h) => h.toLowerCase().trim());
-
-    const col = (row: string[], ...names: string[]): string => {
-      for (const name of names) {
-        const i = headers.indexOf(name);
-        if (i !== -1 && row[i]) return row[i].trim();
-      }
-      return "";
-    };
+    // Keep every column exactly as D7 exports it — nothing discarded
+    const headers = this.splitCsvLine(lines[0]).map((h) => h.trim());
 
     return lines.slice(1).map((line) => {
-      const row = this.splitCsvLine(line);
-      return {
-        name:        col(row, "company name", "name", "business name"),
-        phone:       col(row, "phone", "telephone", "phone number"),
-        email:       col(row, "email", "email address"),
-        website:     col(row, "website", "url", "web"),
-        address:     [col(row, "address", "address1"), col(row, "city"), col(row, "state"), col(row, "zip", "postcode")].filter(Boolean).join(", "),
-        category:    col(row, "category", "keyword", "type"),
-        googleStars: col(row, "google rating", "google stars", "googlestars"),
-        googleCount: col(row, "google reviews", "google count", "googlecount"),
-        yelpStars:   col(row, "yelp rating", "yelp stars", "yelpstars"),
-        yelpCount:   col(row, "yelp reviews", "yelp count", "yelpcount"),
-        fbStars:     col(row, "facebook rating", "fb stars", "fbstars"),
-        fbCount:     col(row, "facebook reviews", "fb count", "fbcount"),
-      };
+      const row  = this.splitCsvLine(line);
+      const lead: UniversalLead = {};
+      headers.forEach((h, i) => {
+        if (h) lead[h] = row[i]?.trim() ?? "";
+      });
+      return lead;
     });
   }
 

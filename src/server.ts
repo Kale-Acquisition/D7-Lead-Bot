@@ -135,14 +135,24 @@ app.get("/api/results", (_req, res) => {
 /** Download all results as CSV */
 app.get("/api/results/csv", (_req, res) => {
   const results = queue.getAllResults();
-  const cols: (keyof UniversalLead)[] = [
-    "name", "phone", "email", "website", "address", "category",
-    "googleStars", "googleCount", "yelpStars", "yelpCount", "fbStars", "fbCount",
-  ];
+  if (!results.length) {
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", 'attachment; filename="leads.csv"');
+    res.send("");
+    return;
+  }
+
+  // Collect every column that appears across all results (preserving first-seen order)
+  const colSet = new Map<string, true>();
+  for (const lead of results) {
+    for (const key of Object.keys(lead)) colSet.set(key, true);
+  }
+  const cols = Array.from(colSet.keys());
+
   const escape = (v: string) => `"${(v ?? "").replace(/"/g, '""')}"`;
   const lines = [
-    cols.join(","),
-    ...results.map((lead) => cols.map((c) => escape(lead[c])).join(",")),
+    cols.map(escape).join(","),
+    ...results.map((lead) => cols.map((c) => escape(lead[c] ?? "")).join(",")),
   ];
 
   res.setHeader("Content-Type", "text/csv");

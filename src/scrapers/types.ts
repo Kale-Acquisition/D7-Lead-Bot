@@ -9,18 +9,6 @@ export class StoppedError extends Error {
 }
 
 export interface UniversalLead {
-  name: string;
-  phone: string;
-  email: string;
-  website: string;
-  address: string;
-  category: string;
-  googleStars: string;
-  googleCount: string;
-  yelpStars: string;
-  yelpCount: string;
-  fbStars: string;
-  fbCount: string;
   [key: string]: string;
 }
 

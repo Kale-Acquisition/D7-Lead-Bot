@@ -23,6 +23,7 @@ export interface SearchJob {
   results: UniversalLead[];
   resultCount: number;
   createdAt: number;
+  scheduledFor?: number; // unix ms — job won't start until this time
   startedAt?: number;
   finishedAt?: number;
 }

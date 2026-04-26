@@ -4,7 +4,6 @@ import path from "path";
 import { JobQueue } from "./queue";
 import { D7Scraper } from "./scrapers/d7";
 import { D7BulkScraper } from "./scrapers/d7-bulk";
-import { UniversalLead } from "./scrapers/types";
 
 const app = express();
 app.use(express.json());
@@ -78,11 +77,12 @@ app.get("/api/scrapers", (_req, res) => {
 
 /** Submit new jobs: { keywords: string[], locations: string[], country?: string, scraperId?: string } */
 app.post("/api/jobs", (req, res) => {
-  const { keywords, locations, country = "US", scraperId = "d7" } = req.body as {
+  const { keywords, locations, country = "US", scraperId = "d7", scheduledFor } = req.body as {
     keywords?: string[];
     locations?: string[];
     country?: string;
     scraperId?: string;
+    scheduledFor?: number;
   };
 
   if (!Array.isArray(keywords) || keywords.length === 0) {
@@ -94,7 +94,7 @@ app.post("/api/jobs", (req, res) => {
     return;
   }
 
-  const jobs = queue.enqueue(keywords, locations, country, scraperId);
+  const jobs = queue.enqueue(keywords, locations, country, scraperId, scheduledFor);
   res.json(jobs);
 });
 

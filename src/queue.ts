@@ -58,9 +58,11 @@ export class JobQueue {
     keywords: string[],
     locations: string[],
     country: string,
-    scraperId: string
+    scraperId: string,
+    scheduledFor?: number
   ): SearchJob[] {
     const created: SearchJob[] = [];
+    const runAt = scheduledFor && scheduledFor > Date.now() ? scheduledFor : undefined;
 
     for (const location of locations) {
       const job: SearchJob = {
@@ -73,13 +75,25 @@ export class JobQueue {
         results: [],
         resultCount: 0,
         createdAt: Date.now(),
+        scheduledFor: runAt,
       };
       this.jobs.set(job.id, job);
-      this.pending.push(job.id);
+
+      if (runAt) {
+        // Delay adding to pending queue until the scheduled time
+        const delay = runAt - Date.now();
+        setTimeout(() => {
+          this.pending.push(job.id);
+          if (!this.stopped) this.pump();
+        }, delay);
+      } else {
+        this.pending.push(job.id);
+      }
+
       created.push(job);
     }
 
-    if (!this.stopped) this.pump();
+    if (!this.stopped && !runAt) this.pump();
     return created;
   }
 

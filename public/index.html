@@ -172,6 +172,17 @@
         </button>
         <button class="btn btn-ghost btn-sm" onclick="clearCompleted()">Clear done</button>
         <button class="btn btn-ghost btn-sm" onclick="clearAll()">Clear all</button>
+        <button class="btn btn-ghost btn-sm" onclick="toggleScheduler()" id="schedule-btn">🗓 Schedule</button>
+      </div>
+
+      <!-- Schedule picker (hidden by default) -->
+      <div id="schedule-panel" style="display:none;margin-top:10px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;">
+        <label style="margin-bottom:6px;">Run at date &amp; time</label>
+        <input type="datetime-local" id="schedule-input" style="width:100%" oninput="onScheduleChange()" />
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;">
+          <span id="schedule-label" style="font-size:12px;color:var(--muted);">Runs immediately if left blank</span>
+          <button class="btn btn-ghost btn-sm" onclick="clearSchedule()">✕ Clear</button>
+        </div>
       </div>
     </div>
 
@@ -352,6 +363,45 @@ async function refreshAccount() {
   }
 }
 
+// ── Scheduler ─────────────────────────────────────────────────────────────────
+function toggleScheduler() {
+  const panel = document.getElementById('schedule-panel');
+  const input = document.getElementById('schedule-input');
+  const isHidden = panel.style.display === 'none';
+  panel.style.display = isHidden ? 'block' : 'none';
+  if (isHidden && !input.value) {
+    // Default to now + 1 day as a helpful starting point
+    const d = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    d.setSeconds(0, 0);
+    input.value = d.toISOString().slice(0, 16);
+    onScheduleChange();
+  }
+}
+
+function clearSchedule() {
+  document.getElementById('schedule-input').value = '';
+  document.getElementById('schedule-label').textContent = 'Runs immediately if left blank';
+  document.getElementById('schedule-label').style.color = 'var(--muted)';
+}
+
+function onScheduleChange() {
+  const val = document.getElementById('schedule-input').value;
+  const label = document.getElementById('schedule-label');
+  if (!val) {
+    label.textContent = 'Runs immediately if left blank';
+    label.style.color = 'var(--muted)';
+    return;
+  }
+  const d = new Date(val);
+  if (d > new Date()) {
+    label.textContent = '🗓 Scheduled for ' + d.toLocaleString();
+    label.style.color = 'var(--green)';
+  } else {
+    label.textContent = '⚠ Date is in the past — will run immediately';
+    label.style.color = 'var(--yellow)';
+  }
+}
+
 // ── Submit jobs ───────────────────────────────────────────────────────────────
 async function submitJobs() {
   const keywords = document.getElementById('keywords').value.trim().split('\n').map(s => s.trim()).filter(Boolean);
@@ -364,12 +414,15 @@ async function submitJobs() {
     return;
   }
 
+  const scheduleVal = document.getElementById('schedule-input').value;
+  const scheduledFor = scheduleVal ? new Date(scheduleVal).getTime() : undefined;
+
   const btn = document.getElementById('run-btn');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span><span>Queuing…</span>';
 
   try {
-    await api('POST', '/api/jobs', { keywords, locations, country, scraperId });
+    await api('POST', '/api/jobs', { keywords, locations, country, scraperId, scheduledFor });
     await pollJobs();
   } catch (err) {
     alert('Error: ' + err.message);
@@ -429,12 +482,16 @@ function renderJobs(jobs) {
     const badge = `<span class="badge badge-${job.status}">${statusLabel(job)}</span>`;
     const error = job.error ? `<div class="job-error">${esc(job.error)}</div>` : '';
     const count = job.status === 'done' ? ` · ${job.resultCount} leads` : '';
+    const scheduled = job.scheduledFor && job.status === 'queued'
+      ? `<div style="font-size:11px;color:var(--accent);margin-top:3px;">🗓 Scheduled for ${new Date(job.scheduledFor).toLocaleString()}</div>`
+      : '';
     return `<div class="job-card">
       <div class="job-header">
         <span class="job-title">${esc(job.location)}</span>
         ${badge}
       </div>
       <div class="job-meta">${esc(job.country)} · ${esc(job.keywords.join(', '))}${count}</div>
+      ${scheduled}
       ${error}
     </div>`;
   }).join('');

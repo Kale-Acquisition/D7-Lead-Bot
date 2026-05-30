@@ -1,6 +1,10 @@
 import { randomUUID } from "crypto";
+import { existsSync, readFileSync, writeFileSync } from "fs";
+import { resolve } from "path";
 import { IScraper, SearchJob, UniversalLead, PauseError, StoppedError } from "./scrapers/types";
 import { D7BulkScraper } from "./scrapers/d7-bulk";
+
+const STATE_FILE = resolve(__dirname, "../.queue-state.json");
 
 export class JobQueue {
   private jobs: Map<string, SearchJob> = new Map();
@@ -95,6 +99,7 @@ export class JobQueue {
       created.push(job);
     }
 
+    this.saveState();
     if (!this.stopped && !runAt) this.pump();
     return created;
   }
@@ -121,11 +126,13 @@ export class JobQueue {
         this.jobs.delete(id);
       }
     }
+    this.saveState();
   }
 
   clearAll(): void {
     this.jobs.clear();
     this.pending = [];
+    this.saveState();
   }
 
   clearResults(): void {
@@ -134,6 +141,52 @@ export class JobQueue {
         job.results = [];
         job.resultCount = 0;
       }
+    }
+    this.saveState();
+  }
+
+  // ── Persistence ───────────────────────────────────────────────────────────
+
+  saveState(): void {
+    try {
+      writeFileSync(STATE_FILE, JSON.stringify({
+        jobs:    Array.from(this.jobs.entries()),
+        stopped: this.stopped,
+      }), "utf8");
+    } catch (err) {
+      console.error("[queue] Failed to save state:", err);
+    }
+  }
+
+  restoreState(): void {
+    if (!existsSync(STATE_FILE)) return;
+    try {
+      const { jobs, stopped } = JSON.parse(readFileSync(STATE_FILE, "utf8"));
+      for (const [id, job] of jobs as [string, SearchJob][]) {
+        // Jobs that were mid-run when the server stopped — reset them so they retry
+        if (job.status === "running") job.status = "queued";
+        this.jobs.set(id, job);
+      }
+      this.stopped = stopped ?? false;
+
+      // Re-queue all queued jobs, respecting future schedules
+      for (const job of this.jobs.values()) {
+        if (job.status !== "queued") continue;
+        if (job.scheduledFor && job.scheduledFor > Date.now()) {
+          const delay = job.scheduledFor - Date.now();
+          setTimeout(() => {
+            this.pending.push(job.id);
+            if (!this.stopped) this.pump();
+          }, delay);
+        } else {
+          this.pending.push(job.id);
+        }
+      }
+
+      console.log(`[queue] Restored ${this.jobs.size} jobs (${this.pending.length} ready, scheduled timers re-armed)`);
+      if (!this.stopped && this.pending.length > 0) this.pump();
+    } catch (err) {
+      console.error("[queue] Failed to restore state:", err);
     }
   }
 
@@ -233,6 +286,7 @@ export class JobQueue {
     if (job.scheduledFor !== undefined && job.status !== "queued") {
       this.checkScheduledBatch(job.scheduledFor);
     }
+    this.saveState();
   }
 
   /**
@@ -358,6 +412,7 @@ export class JobQueue {
       if (job.scheduledFor !== undefined) {
         this.checkScheduledBatch(job.scheduledFor);
       }
+      this.saveState();
     }
   }
 }

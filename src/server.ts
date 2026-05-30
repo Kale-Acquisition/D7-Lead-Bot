@@ -34,6 +34,9 @@ if (d7Email && d7Password) {
   console.log("Skipping D7 Bulk scraper — set D7_EMAIL and D7_PASSWORD in .env to enable it");
 }
 
+// ── Restore queue state from previous run ────────────────────────────────────
+queue.restoreState();
+
 // ── Scheduled-batch auto-export ───────────────────────────────────────────────
 const autoExportDir = process.env.AUTO_EXPORT_PATH || path.join(os.homedir(), "Downloads");
 

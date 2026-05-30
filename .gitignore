@@ -3,6 +3,7 @@ dist/
 .env
 .claude/
 .d7-session.json
+.queue-state.json
 .tmp-bulk-download.csv
 *.csv
 *.plan.md

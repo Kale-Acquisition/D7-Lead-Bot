@@ -668,7 +668,7 @@ function renderHistory() {
     const kwText  = batch[0].keywords.join(' · ');
     const locsText = batch.map(j => j.location).join(', ');
     const total   = batch.reduce((n, j) => n + j.resultCount, 0);
-    const time    = new Date(batch[0].createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const dateStr = formatOrdinalDate(new Date(batch[0].createdAt));
     const ids     = JSON.stringify(batch.map(j => j.id));
     const kw      = JSON.stringify(kwText);
     const locs    = JSON.stringify(locsText);
@@ -676,7 +676,7 @@ function renderHistory() {
       <div class="history-card-kw" title="${esc(kwText)}">${esc(kwText)}</div>
       <div class="history-card-locs" title="${esc(locsText)}">${esc(locsText)}</div>
       <div class="history-card-row">
-        <span class="history-card-count">${total.toLocaleString()} leads &middot; ${esc(time)}</span>
+        <span class="history-card-count">${total.toLocaleString()} leads &middot; ${esc(dateStr)}</span>
         <button class="history-card-load" onclick="loadHistoryBatch(${esc(ids)}, ${esc(kw)}, ${esc(locs)})">Load →</button>
       </div>
     </div>`;
@@ -701,6 +701,19 @@ function groupIntoBatches(sortedJobs) {
     batches.push(batch);
   }
   return batches;
+}
+
+function ordinal(n) {
+  if (n >= 11 && n <= 13) return n + 'th';
+  switch (n % 10) {
+    case 1: return n + 'st';
+    case 2: return n + 'nd';
+    case 3: return n + 'rd';
+    default: return n + 'th';
+  }
+}
+function formatOrdinalDate(d) {
+  return ordinal(d.getDate()) + ' ' + d.toLocaleDateString('en-US', { month: 'short' });
 }
 
 function getDateLabel(ts) {

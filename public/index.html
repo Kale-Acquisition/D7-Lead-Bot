@@ -113,6 +113,34 @@
     /* ── Spinner ── */
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+
+    /* ── History sidebar ── */
+    .panel-right { position: relative; overflow: hidden; }
+    .history-dim { position: absolute; inset: 0; background: rgba(0,0,0,0.45); z-index: 9; opacity: 0; pointer-events: none; transition: opacity .2s; cursor: pointer; }
+    .history-dim.on { opacity: 1; pointer-events: auto; }
+    .history-sidebar { position: absolute; top: 0; right: 0; bottom: 0; width: 300px; background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; transform: translateX(100%); transition: transform .25s cubic-bezier(.4,0,.2,1); z-index: 10; }
+    .history-sidebar.open { transform: translateX(0); }
+    .history-hdr { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 700; flex-shrink: 0; }
+    .history-hdr button { background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; line-height: 1; padding: 2px 4px; }
+    .history-hdr button:hover { color: var(--text); }
+    .history-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 3px; }
+    .history-date { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 8px 4px 4px; }
+    .history-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; transition: border-color .15s; }
+    .history-card:hover { border-color: var(--accent); }
+    .history-card-kw { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .history-card-locs { font-size: 12px; color: var(--muted); margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .history-card-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .history-card-count { font-size: 12px; color: var(--green); font-weight: 600; }
+    .history-card-load { font-size: 12px; font-weight: 700; color: var(--accent); background: none; border: 1px solid var(--accent); border-radius: 4px; padding: 3px 10px; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+    .history-card-load:hover { background: var(--accent); color: #fff; }
+    .history-ftr { padding: 12px; border-top: 1px solid var(--border); flex-shrink: 0; }
+    .history-ftr button { width: 100%; padding: 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 13px; cursor: pointer; }
+    .history-ftr button:hover { color: var(--text); border-color: var(--muted); }
+    .history-banner { background: #151a2e; border-bottom: 1px solid var(--accent); padding: 7px 20px; display: flex; align-items: center; justify-content: space-between; font-size: 13px; flex-shrink: 0; gap: 12px; }
+    .history-banner span { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .history-banner strong { color: var(--text); }
+    .history-banner button { background: none; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: 12px; padding: 3px 10px; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+    .history-banner button:hover { border-color: var(--muted); color: var(--text); }
   </style>
 </head>
 <body>
@@ -203,7 +231,14 @@
       <div class="btn-row">
         <button class="btn btn-ghost btn-sm" onclick="downloadCsv()">Export CSV</button>
         <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red)" onclick="clearLeads()">Clear Leads</button>
+        <button class="btn btn-ghost btn-sm" onclick="openHistory()">🕐 Old Searches</button>
       </div>
+    </div>
+
+    <!-- Viewing-old-search banner -->
+    <div class="history-banner" id="history-banner" style="display:none">
+      <span>Viewing: <strong id="history-banner-label"></strong></span>
+      <button onclick="backToCurrent()">← Back to current results</button>
     </div>
 
     <div class="table-wrap">
@@ -220,6 +255,21 @@
       <span class="page-info" id="pg-info">—</span>
       <button id="pg-next" onclick="changePage(1)" disabled>Next →</button>
     </div>
+
+    <!-- Dim overlay (closes sidebar on click) -->
+    <div class="history-dim" id="history-dim" onclick="closeHistory()"></div>
+
+    <!-- Slide-in history sidebar -->
+    <div class="history-sidebar" id="history-sidebar">
+      <div class="history-hdr">
+        <span>🕐 Old Searches</span>
+        <button onclick="closeHistory()" title="Close">✕</button>
+      </div>
+      <div class="history-list" id="history-list"></div>
+      <div class="history-ftr">
+        <button onclick="closeHistory()">← Back to current results</button>
+      </div>
+    </div>
   </div>
 
 </div>
@@ -228,6 +278,9 @@
 // ── State ────────────────────────────────────────────────────────────────────
 let allResults = [];
 let allColumns = [];
+let liveResults = [];       // always the latest real-time results
+let viewingHistory = false; // true when an old search is loaded into the table
+let allJobs = [];           // full job list (metadata only) for history panel
 let queueStopped = false;
 let currentPage = 0;
 const PAGE_SIZE = 100;
@@ -436,15 +489,19 @@ async function submitJobs() {
 // ── Poll jobs ─────────────────────────────────────────────────────────────────
 async function pollJobs() {
   const jobs = await api('GET', '/api/jobs');
+  allJobs = jobs;
   renderJobs(jobs);
 
   // Only re-fetch results when the total done count changes
   const doneCount = jobs.reduce((n, j) => n + (j.status === 'done' ? j.resultCount : 0), 0);
   if (doneCount !== lastResultCount) {
     lastResultCount = doneCount;
-    allResults = await api('GET', '/api/results');
-    currentPage = 0;
-    renderResults(allResults);
+    liveResults = await api('GET', '/api/results');
+    if (!viewingHistory) {
+      allResults = liveResults;
+      currentPage = 0;
+      renderResults(allResults);
+    }
   }
 }
 
@@ -466,9 +523,12 @@ async function clearAll() {
   if (!confirm('Clear all jobs and results?')) return;
   await api('DELETE', '/api/jobs');
   allResults = [];
+  liveResults = [];
+  viewingHistory = false;
   lastResultCount = -1;
   currentPage = 0;
   renderResults([]);
+  document.getElementById('history-banner').style.display = 'none';
   await pollJobs();
 }
 
@@ -564,9 +624,119 @@ async function clearLeads() {
   if (!confirm('Clear all leads? Jobs and search history will be kept.')) return;
   await api('DELETE', '/api/results');
   allResults = [];
+  liveResults = [];
+  viewingHistory = false;
   lastResultCount = -1;
   currentPage = 0;
   renderResults([]);
+  document.getElementById('history-banner').style.display = 'none';
+}
+
+// ── History sidebar ───────────────────────────────────────────────────────────
+function openHistory() {
+  renderHistory();
+  document.getElementById('history-sidebar').classList.add('open');
+  document.getElementById('history-dim').classList.add('on');
+}
+
+function closeHistory() {
+  document.getElementById('history-sidebar').classList.remove('open');
+  document.getElementById('history-dim').classList.remove('on');
+}
+
+function renderHistory() {
+  const done = allJobs
+    .filter(j => j.status === 'done' && j.resultCount > 0)
+    .sort((a, b) => b.createdAt - a.createdAt);
+
+  const batches = groupIntoBatches(done);
+  const list = document.getElementById('history-list');
+
+  if (!batches.length) {
+    list.innerHTML = '<div style="color:var(--muted);font-size:13px;text-align:center;padding:32px 0">No completed searches yet.</div>';
+    return;
+  }
+
+  let html = '';
+  let lastLabel = '';
+  for (const batch of batches) {
+    const dateLabel = getDateLabel(batch[0].createdAt);
+    if (dateLabel !== lastLabel) {
+      html += `<div class="history-date">${esc(dateLabel)}</div>`;
+      lastLabel = dateLabel;
+    }
+    const kwText  = batch[0].keywords.join(' · ');
+    const locsText = batch.map(j => j.location).join(', ');
+    const total   = batch.reduce((n, j) => n + j.resultCount, 0);
+    const time    = new Date(batch[0].createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const ids     = JSON.stringify(batch.map(j => j.id));
+    const kw      = JSON.stringify(kwText);
+    const locs    = JSON.stringify(locsText);
+    html += `<div class="history-card">
+      <div class="history-card-kw" title="${esc(kwText)}">${esc(kwText)}</div>
+      <div class="history-card-locs" title="${esc(locsText)}">${esc(locsText)}</div>
+      <div class="history-card-row">
+        <span class="history-card-count">${total.toLocaleString()} leads &middot; ${esc(time)}</span>
+        <button class="history-card-load" onclick="loadHistoryBatch(${esc(ids)}, ${esc(kw)}, ${esc(locs)})">Load →</button>
+      </div>
+    </div>`;
+  }
+  list.innerHTML = html;
+}
+
+function groupIntoBatches(sortedJobs) {
+  const batches = [];
+  const used = new Set();
+  for (const job of sortedJobs) {
+    if (used.has(job.id)) continue;
+    const kwKey = job.keywords.join('\x00');
+    const tKey  = Math.floor(job.createdAt / 2000);
+    const batch = sortedJobs.filter(j =>
+      !used.has(j.id) &&
+      j.keywords.join('\x00') === kwKey &&
+      j.scraperId === job.scraperId &&
+      Math.floor(j.createdAt / 2000) === tKey
+    );
+    batch.forEach(j => used.add(j.id));
+    batches.push(batch);
+  }
+  return batches;
+}
+
+function getDateLabel(ts) {
+  const d   = new Date(ts);
+  const now = new Date();
+  const yest = new Date(now); yest.setDate(now.getDate() - 1);
+  if (d.toDateString() === now.toDateString())  return 'Today';
+  if (d.toDateString() === yest.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+async function loadHistoryBatch(ids, kwLabel, locsLabel) {
+  closeHistory();
+  document.getElementById('results-body').innerHTML =
+    '<tr><td colspan="9" class="empty-results"><span class="spinner"></span>&nbsp; Loading…</td></tr>';
+
+  try {
+    const jobs    = await Promise.all(ids.map(id => api('GET', '/api/jobs/' + id)));
+    const results = jobs.flatMap(j => j.results || []);
+    viewingHistory = true;
+    allResults     = results;
+    currentPage    = 0;
+    renderResults(results);
+    document.getElementById('history-banner-label').textContent = kwLabel + ' — ' + locsLabel;
+    document.getElementById('history-banner').style.display = 'flex';
+  } catch (err) {
+    alert('Failed to load results: ' + err.message);
+  }
+}
+
+function backToCurrent() {
+  viewingHistory = false;
+  allResults     = liveResults;
+  currentPage    = 0;
+  renderResults(allResults);
+  document.getElementById('history-banner').style.display = 'none';
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

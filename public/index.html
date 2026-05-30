@@ -202,6 +202,7 @@
       </div>
       <div class="btn-row">
         <button class="btn btn-ghost btn-sm" onclick="downloadCsv()">Export CSV</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red)" onclick="clearLeads()">Clear Leads</button>
       </div>
     </div>
 
@@ -556,6 +557,16 @@ function renderResults(results) {
 // ── Export CSV ────────────────────────────────────────────────────────────────
 function downloadCsv() {
   window.open('/api/results/csv');
+}
+
+// ── Clear leads only ──────────────────────────────────────────────────────────
+async function clearLeads() {
+  if (!confirm('Clear all leads? Jobs and search history will be kept.')) return;
+  await api('DELETE', '/api/results');
+  allResults = [];
+  lastResultCount = -1;
+  currentPage = 0;
+  renderResults([]);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

@@ -9,6 +9,8 @@ export class JobQueue {
   private stopped = false;
   private pauseReason: string | null = null;
   private scrapers: Map<string, IScraper> = new Map();
+  private onScheduledBatchComplete?: (jobs: SearchJob[], filename: string) => void;
+  private firedScheduledExports: Set<number> = new Set();
 
   // ── Scraper registry ──────────────────────────────────────────────────────
 
@@ -126,6 +128,42 @@ export class JobQueue {
     this.pending = [];
   }
 
+  clearResults(): void {
+    for (const job of this.jobs.values()) {
+      if (job.status === "done") {
+        job.results = [];
+        job.resultCount = 0;
+      }
+    }
+  }
+
+  // ── Scheduled-batch auto-export ───────────────────────────────────────────
+
+  setOnScheduledBatchComplete(cb: (jobs: SearchJob[], filename: string) => void): void {
+    this.onScheduledBatchComplete = cb;
+  }
+
+  /** Build a Compiled_FirstCity-LastCity.csv filename from a set of jobs. */
+  getFilename(jobs?: SearchJob[]): string {
+    const source = (jobs ?? Array.from(this.jobs.values()).filter(j => j.status === "done"))
+      .sort((a, b) => a.createdAt - b.createdAt);
+    if (!source.length) return "leads.csv";
+    const clean = (s: string) => s.split(",")[0].trim().replace(/[^\w\- ]/g, "").replace(/\s+/g, "_");
+    const first = clean(source[0].location);
+    const last  = clean(source[source.length - 1].location);
+    return first === last ? `Compiled_${first}.csv` : `Compiled_${first}-${last}.csv`;
+  }
+
+  private checkScheduledBatch(scheduledFor: number): void {
+    if (!this.onScheduledBatchComplete) return;
+    if (this.firedScheduledExports.has(scheduledFor)) return;
+    const batch = Array.from(this.jobs.values()).filter(j => j.scheduledFor === scheduledFor);
+    if (!batch.length) return;
+    if (!batch.every(j => j.status === "done" || j.status === "failed")) return;
+    this.firedScheduledExports.add(scheduledFor);
+    this.onScheduledBatchComplete(batch, this.getFilename(batch));
+  }
+
   // ── Internal processor ────────────────────────────────────────────────────
 
   private async pump(): Promise<void> {
@@ -191,6 +229,9 @@ export class JobQueue {
       }
     } finally {
       if (job.status !== "queued") job.finishedAt = Date.now();
+    }
+    if (job.scheduledFor !== undefined && job.status !== "queued") {
+      this.checkScheduledBatch(job.scheduledFor);
     }
   }
 
@@ -313,6 +354,9 @@ export class JobQueue {
           job.error      = err instanceof Error ? err.message : String(err);
           job.finishedAt = Date.now();
         }
+      }
+      if (job.scheduledFor !== undefined) {
+        this.checkScheduledBatch(job.scheduledFor);
       }
     }
   }

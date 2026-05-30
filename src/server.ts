@@ -1,5 +1,7 @@
 import "dotenv/config";
 import express from "express";
+import fs from "fs";
+import os from "os";
 import path from "path";
 import { JobQueue } from "./queue";
 import { D7Scraper } from "./scrapers/d7";
@@ -31,6 +33,31 @@ if (d7Email && d7Password) {
 } else {
   console.log("Skipping D7 Bulk scraper — set D7_EMAIL and D7_PASSWORD in .env to enable it");
 }
+
+// ── Scheduled-batch auto-export ───────────────────────────────────────────────
+const autoExportDir = process.env.AUTO_EXPORT_PATH || path.join(os.homedir(), "Downloads");
+
+queue.setOnScheduledBatchComplete((batchJobs, filename) => {
+  const results = batchJobs.filter(j => j.status === "done").flatMap(j => j.results);
+  if (!results.length) return;
+
+  const colSet = new Map<string, true>();
+  for (const lead of results) for (const k of Object.keys(lead)) colSet.set(k, true);
+  const cols = Array.from(colSet.keys());
+  const escape = (v: string) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const csv = [
+    cols.map(escape).join(","),
+    ...results.map(r => cols.map(c => escape(r[c] ?? "")).join(",")),
+  ].join("\n") + "\n";
+
+  try {
+    fs.mkdirSync(autoExportDir, { recursive: true });
+    fs.writeFileSync(path.join(autoExportDir, filename), csv, "utf8");
+    console.log(`[auto-export] ✓ ${results.length} leads → ${path.join(autoExportDir, filename)}`);
+  } catch (err) {
+    console.error("[auto-export] Failed to write CSV:", err);
+  }
+});
 
 // ── API routes ───────────────────────────────────────────────────────────────
 
@@ -127,6 +154,12 @@ app.delete("/api/jobs", (_req, res) => {
   res.json({ ok: true });
 });
 
+/** Clear all leads without touching jobs */
+app.delete("/api/results", (_req, res) => {
+  queue.clearResults();
+  res.json({ ok: true });
+});
+
 /** Get all aggregated results */
 app.get("/api/results", (_req, res) => {
   res.json(queue.getAllResults());
@@ -135,18 +168,14 @@ app.get("/api/results", (_req, res) => {
 /** Download all results as CSV */
 app.get("/api/results/csv", (_req, res) => {
   const results = queue.getAllResults();
-  if (!results.length) {
-    res.setHeader("Content-Type", "text/csv");
-    res.setHeader("Content-Disposition", 'attachment; filename="leads.csv"');
-    res.send("");
-    return;
-  }
+  const filename = queue.getFilename();
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
 
-  // Collect every column that appears across all results (preserving first-seen order)
+  if (!results.length) { res.send(""); return; }
+
   const colSet = new Map<string, true>();
-  for (const lead of results) {
-    for (const key of Object.keys(lead)) colSet.set(key, true);
-  }
+  for (const lead of results) for (const key of Object.keys(lead)) colSet.set(key, true);
   const cols = Array.from(colSet.keys());
 
   const escape = (v: string) => `"${(v ?? "").replace(/"/g, '""')}"`;
@@ -155,8 +184,6 @@ app.get("/api/results/csv", (_req, res) => {
     ...results.map((lead) => cols.map((c) => escape(lead[c] ?? "")).join(",")),
   ];
 
-  res.setHeader("Content-Type", "text/csv");
-  res.setHeader("Content-Disposition", 'attachment; filename="leads.csv"');
   res.send(lines.join("\n") + "\n");
 });
 

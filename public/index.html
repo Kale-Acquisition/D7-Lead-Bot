@@ -622,7 +622,7 @@ function downloadCsv() {
 // ── Clear leads only ──────────────────────────────────────────────────────────
 async function clearLeads() {
   if (!confirm('Clear all leads? Jobs and search history will be kept.')) return;
-  await api('DELETE', '/api/results');
+  // Clear UI instantly before the network call
   allResults = [];
   liveResults = [];
   viewingHistory = false;
@@ -630,6 +630,8 @@ async function clearLeads() {
   currentPage = 0;
   renderResults([]);
   document.getElementById('history-banner').style.display = 'none';
+  // Sync with server in background
+  api('DELETE', '/api/results').catch(err => console.error('[clearLeads]', err.message));
 }
 
 // ── History sidebar ───────────────────────────────────────────────────────────

@@ -70,7 +70,8 @@ export class JobQueue {
     const created: SearchJob[] = [];
     const runAt = scheduledFor && scheduledFor > Date.now() ? scheduledFor : undefined;
 
-    for (const location of locations) {
+    for (const rawLocation of locations) {
+      const location = rawLocation.trim().replace(/\s+/g, " ");
       const job: SearchJob = {
         id: randomUUID(),
         keywords,

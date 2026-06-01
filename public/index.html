@@ -77,6 +77,7 @@
     .badge-running  { background: #2a2000; color: var(--yellow); }
     .badge-done     { background: #0f2a1a; color: var(--green); }
     .badge-failed   { background: #2a0f0f; color: var(--red); }
+    .badge-stuck    { background: #2a1500; color: #f97316; }
     .job-error { color: var(--red); font-size: 12px; margin-top: 4px; }
     .no-jobs { color: var(--muted); font-size: 13px; text-align: center; padding: 32px 0; }
 
@@ -546,7 +547,8 @@ function renderJobs(jobs) {
     return;
   }
   el.innerHTML = jobs.map(job => {
-    const badge = `<span class="badge badge-${job.status}">${statusLabel(job)}</span>`;
+    const { cls, label } = getJobBadge(job);
+    const badge = `<span class="badge ${cls}">${label}</span>`;
     const error = job.error ? `<div class="job-error">${esc(job.error)}</div>` : '';
     const count = job.status === 'done' ? ` · ${job.resultCount} leads` : '';
     const scheduled = job.scheduledFor && job.status === 'queued'
@@ -564,11 +566,14 @@ function renderJobs(jobs) {
   }).join('');
 }
 
-function statusLabel(job) {
-  if (job.status === 'running') return '⟳ running';
-  if (job.status === 'queued')  return '… queued';
-  if (job.status === 'done')    return '✓ done';
-  return '✗ failed';
+function getJobBadge(job) {
+  const isStuck = job.scraperId === 'd7-bulk' && job.bulkRefName &&
+                  (job.status === 'failed' || job.status === 'running');
+  if (isStuck)              return { cls: 'badge-stuck',   label: '⚠ stuck' };
+  if (job.status === 'running') return { cls: 'badge-running', label: '⟳ running' };
+  if (job.status === 'queued')  return { cls: 'badge-queued',  label: '… queued' };
+  if (job.status === 'done')    return { cls: 'badge-done',    label: '✓ done' };
+  return { cls: 'badge-failed', label: '✗ failed' };
 }
 
 // ── Render results (paginated, all columns dynamic) ───────────────────────────

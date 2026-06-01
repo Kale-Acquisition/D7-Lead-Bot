@@ -84,6 +84,13 @@ export class D7BulkScraper implements IScraper {
     if (this.stopped) throw new StoppedError();
   }
 
+  private async interruptibleSleep(ms: number): Promise<void> {
+    const end = Date.now() + ms;
+    while (Date.now() < end && !this.stopped) {
+      await new Promise<void>((r) => setTimeout(r, 500));
+    }
+  }
+
   // ── Browser / session ─────────────────────────────────────────────────────
 
   private async getContext(): Promise<BrowserContext> {
@@ -293,7 +300,8 @@ export class D7BulkScraper implements IScraper {
 
         attempt++;
         console.log(`[d7-bulk] "${refName}" still processing — waiting 5 min… (attempt ${attempt})`);
-        await page.waitForTimeout(pollInterval);
+        await this.interruptibleSleep(pollInterval);
+        this.checkStopped();
       }
 
       throw new Error(`Timed out waiting for "${refName}" to complete`);
@@ -355,7 +363,8 @@ export class D7BulkScraper implements IScraper {
       this.checkStopped();
       const doneRows = await page.locator('a:has-text("View Single List")').count();
       if (doneRows >= keywordCount) return;
-      await page.waitForTimeout(pollInterval);
+      await this.interruptibleSleep(pollInterval);
+      this.checkStopped();
       await page.reload({ waitUntil: "domcontentloaded" });
     }
     // Non-fatal — proceed anyway and let downloadCsv fail if truly broken

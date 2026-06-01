@@ -218,6 +218,16 @@ export class JobQueue {
     this.onScheduledBatchComplete(batch, this.getFilename(batch));
   }
 
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  /** Sleep for `ms` milliseconds, waking early if the queue is stopped. */
+  private async interruptibleSleep(ms: number): Promise<void> {
+    const end = Date.now() + ms;
+    while (Date.now() < end && !this.stopped) {
+      await new Promise<void>((r) => setTimeout(r, 500));
+    }
+  }
+
   // ── Internal processor ────────────────────────────────────────────────────
 
   private async pump(): Promise<void> {
@@ -346,10 +356,10 @@ export class JobQueue {
           this.saveState();
           console.log(`[queue] Submitted ${i + 1}/${batchIds.length}: ${job.location}`);
 
-          // Wait 65 s before the next new submission (D7 rate limit)
+          // Wait 65 s before the next new submission (D7 rate limit, interruptible)
           if (i < batchIds.length - 1 && !this.stopped) {
             console.log("[queue] Waiting 65 s before next bulk submission…");
-            await new Promise((r) => setTimeout(r, 65000));
+            await this.interruptibleSleep(65000);
           }
         }
 

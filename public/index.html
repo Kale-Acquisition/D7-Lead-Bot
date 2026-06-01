@@ -231,6 +231,7 @@
       <div class="btn-row">
         <button class="btn btn-ghost btn-sm" onclick="downloadCsv()">Export CSV</button>
         <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red)" onclick="clearLeads()">Clear Leads</button>
+        <button class="btn btn-ghost btn-sm" id="retry-btn" onclick="retryDownloads()" style="display:none;color:var(--yellow);border-color:var(--yellow)">↺ Restart Downloads</button>
         <button class="btn btn-ghost btn-sm" onclick="openHistory()">🕐 Old Searches</button>
       </div>
     </div>
@@ -534,6 +535,11 @@ async function clearAll() {
 
 // ── Render jobs ───────────────────────────────────────────────────────────────
 function renderJobs(jobs) {
+  // Show Restart Downloads button when there are stuck bulk jobs with a saved refName
+  const hasStuck = jobs.some(j => j.scraperId === 'd7-bulk' && j.bulkRefName &&
+    (j.status === 'failed' || j.status === 'running'));
+  document.getElementById('retry-btn').style.display = hasStuck ? '' : 'none';
+
   const el = document.getElementById('job-list');
   if (!jobs.length) {
     el.innerHTML = '<div class="no-jobs">No jobs yet — run a search above.</div>';
@@ -612,6 +618,22 @@ function renderResults(results) {
   pgInfo.textContent = `Page ${currentPage + 1} of ${totalPages} (${start + 1}–${Math.min(start + PAGE_SIZE, results.length)} of ${results.length.toLocaleString()})`;
   pgPrev.disabled = currentPage === 0;
   pgNext.disabled = currentPage >= totalPages - 1;
+}
+
+// ── Retry interrupted bulk downloads ─────────────────────────────────────────
+async function retryDownloads() {
+  const btn = document.getElementById('retry-btn');
+  btn.disabled = true;
+  btn.textContent = '↺ Restarting…';
+  try {
+    const { retried } = await api('POST', '/api/queue/retry-downloads');
+    if (retried === 0) alert('No interrupted downloads found to retry.');
+  } catch (err) {
+    alert('Error: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '↺ Restart Downloads';
+  }
 }
 
 // ── Export CSV ────────────────────────────────────────────────────────────────

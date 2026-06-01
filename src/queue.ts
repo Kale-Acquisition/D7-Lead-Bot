@@ -315,7 +315,7 @@ export class JobQueue {
     // Remove them all from pending upfront
     this.pending.splice(0, batchIds.length);
 
-    // ── Phase 1: Submit all searches ────────────────────────────────────────
+    // ── Phase 1: Submit all searches (skip jobs already submitted in a prior run) ─
 
     const submissions: Array<{ jobId: string; refName: string; keywordCount: number }> = [];
 
@@ -328,15 +328,31 @@ export class JobQueue {
       job.startedAt = Date.now();
 
       try {
-        const { refName, keywordCount } = await scraper.submitBulkJob(job.keywords, job.location);
-        submissions.push({ jobId, refName, keywordCount });
-        console.log(`[queue] Submitted ${i + 1}/${batchIds.length}: ${job.location}`);
+        let refName: string;
+        let keywordCount: number;
 
-        // Wait 65 s before the next submission (D7 rate limit)
-        if (i < batchIds.length - 1 && !this.stopped) {
-          console.log("[queue] Waiting 65 s before next bulk submission…");
-          await new Promise((r) => setTimeout(r, 65000));
+        if (job.bulkRefName) {
+          // Already submitted in a previous run — go straight to Phase 2
+          refName      = job.bulkRefName;
+          keywordCount = job.bulkKeywordCount ?? job.keywords.length;
+          console.log(`[queue] Skipping re-submit for ${job.location} (already submitted as "${refName}")`);
+        } else {
+          const result = await scraper.submitBulkJob(job.keywords, job.location);
+          refName      = result.refName;
+          keywordCount = result.keywordCount;
+          job.bulkRefName      = refName;
+          job.bulkKeywordCount = keywordCount;
+          this.saveState();
+          console.log(`[queue] Submitted ${i + 1}/${batchIds.length}: ${job.location}`);
+
+          // Wait 65 s before the next new submission (D7 rate limit)
+          if (i < batchIds.length - 1 && !this.stopped) {
+            console.log("[queue] Waiting 65 s before next bulk submission…");
+            await new Promise((r) => setTimeout(r, 65000));
+          }
         }
+
+        submissions.push({ jobId, refName, keywordCount });
 
       } catch (err) {
         if (err instanceof StoppedError) {
@@ -377,8 +393,15 @@ export class JobQueue {
 
     console.log(`[queue] All ${submissions.length} searches submitted — now downloading results…`);
 
-    for (const { jobId, refName, keywordCount } of submissions) {
-      if (this.stopped) break;
+    for (let i = 0; i < submissions.length; i++) {
+      const { jobId, refName, keywordCount } = submissions[i];
+
+      if (this.stopped) {
+        // Mark this and all remaining as failed so Restart Downloads can find them
+        this.failRemaining(submissions, i, "Download interrupted — click Restart Downloads to retry");
+        this.saveState();
+        return;
+      }
 
       const job = this.jobs.get(jobId)!;
 
@@ -390,17 +413,19 @@ export class JobQueue {
 
       } catch (err) {
         if (err instanceof StoppedError) {
-          job.status     = "failed";
-          job.error      = "Stopped before results could be downloaded";
-          job.finishedAt = Date.now();
+          this.failRemaining(submissions, i, "Download interrupted — click Restart Downloads to retry");
+          this.saveState();
+          return;
 
         } else if (err instanceof PauseError) {
           job.status     = "failed";
           job.error      = `Download error: ${err.message}`;
           job.finishedAt = Date.now();
+          this.failRemaining(submissions, i + 1, "Download interrupted — click Restart Downloads to retry");
           this.stopped     = true;
           this.pauseReason = err.message;
           scraper.stop();
+          this.saveState();
           return;
 
         } else {
@@ -414,5 +439,43 @@ export class JobQueue {
       }
       this.saveState();
     }
+  }
+
+  private failRemaining(
+    submissions: Array<{ jobId: string }>,
+    fromIndex: number,
+    reason: string
+  ): void {
+    for (const { jobId } of submissions.slice(fromIndex)) {
+      const j = this.jobs.get(jobId);
+      if (j && (j.status === "running" || j.status === "queued")) {
+        j.status     = "failed";
+        j.error      = reason;
+        j.finishedAt = Date.now();
+      }
+    }
+  }
+
+  retryDownloads(): number {
+    let count = 0;
+    for (const job of this.jobs.values()) {
+      if (job.scraperId !== "d7-bulk" || !job.bulkRefName) continue;
+      if (job.status === "running" || job.status === "failed") {
+        job.status     = "queued";
+        job.error      = undefined;
+        job.finishedAt = undefined;
+        if (!this.pending.includes(job.id)) {
+          this.pending.push(job.id);
+          count++;
+        }
+      }
+    }
+    if (count > 0) {
+      this.stopped     = false;
+      this.pauseReason = null;
+      this.saveState();
+      this.pump();
+    }
+    return count;
   }
 }

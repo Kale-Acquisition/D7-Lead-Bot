@@ -81,6 +81,12 @@ app.post("/api/queue/resume", (_req, res) => {
   res.json({ ok: true });
 });
 
+/** Retry interrupted bulk downloads without re-submitting to D7 */
+app.post("/api/queue/retry-downloads", (_req, res) => {
+  const count = queue.retryDownloads();
+  res.json({ ok: true, retried: count });
+});
+
 /** Start manual login flow (opens visible browser for CAPTCHA) */
 app.post("/api/auth/d7-bulk/start", (_req, res) => {
   const scraper = queue.getScraper("d7-bulk") as D7BulkScraper | undefined;

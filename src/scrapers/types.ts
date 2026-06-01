@@ -26,6 +26,8 @@ export interface SearchJob {
   scheduledFor?: number; // unix ms — job won't start until this time
   startedAt?: number;
   finishedAt?: number;
+  bulkRefName?: string;      // D7 Bulk: reference name saved after Phase 1 so Phase 2 can resume after restart
+  bulkKeywordCount?: number;
 }
 
 export interface AccountSummary {

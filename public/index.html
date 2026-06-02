@@ -568,7 +568,7 @@ function renderJobs(jobs) {
 
 function getJobBadge(job) {
   const isStuck = job.scraperId === 'd7-bulk' && job.bulkRefName &&
-                  (job.status === 'failed' || job.status === 'running');
+                  job.status === 'failed';
   if (isStuck)              return { cls: 'badge-stuck',   label: '⚠ stuck' };
   if (job.status === 'running') return { cls: 'badge-running', label: '⟳ running' };
   if (job.status === 'queued')  return { cls: 'badge-queued',  label: '… queued' };

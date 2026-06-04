@@ -845,9 +845,7 @@ function renderStats() {
     const dateStr = formatOrdinalDate(new Date(batch[0].createdAt));
     const kwLabel = batch[0].keywords.join(' · ');
     html += `<div class="stats-batch-hdr" title="${esc(kwLabel)}">${esc(kwLabel)} &middot; ${esc(dateStr)} &mdash; <span>${batchTotal.toLocaleString()} leads</span></div>`;
-    // Sort cities by lead count descending
-    const sorted = batch.slice().sort((a, b) => b.resultCount - a.resultCount);
-    for (const job of sorted) {
+    for (const job of batch) {
       html += `<div class="stats-row">
         <span class="stats-city" title="${esc(job.location)}">${esc(job.location)}</span>
         <span class="stats-count">${job.resultCount.toLocaleString()}</span>

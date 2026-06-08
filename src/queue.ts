@@ -400,55 +400,104 @@ export class JobQueue {
 
     if (this.stopped) return;
 
-    // ── Phase 2: Download results (D7 processed them in parallel) ────────────
+    // ── Phase 2: Opportunistic download — process whichever cities are ready ──
+    // Scan the history page once per cycle; download all cities that have a
+    // View button, skip cities still "Joining Data", wait only when nothing
+    // is ready. This avoids blocking on slow cities while faster ones sit idle.
 
     console.log(`[queue] All ${submissions.length} searches submitted — now downloading results…`);
 
-    for (let i = 0; i < submissions.length; i++) {
-      const { jobId, refName, keywordCount } = submissions[i];
+    const pending = new Map(submissions.map(s => [s.refName, s]));
+    const maxWait  = 4 * 60 * 60 * 1000; // 4-hour hard timeout
+    const phaseStart = Date.now();
 
+    while (pending.size > 0) {
       if (this.stopped) {
-        // Mark this and all remaining as failed so Restart Downloads can find them
-        this.failRemaining(submissions, i, "Download interrupted — click Restart Downloads to retry");
+        const remaining = Array.from(pending.values()).map(s => ({ jobId: s.jobId }));
+        this.failRemaining(remaining, 0, "Download interrupted — click Restart Downloads to retry");
         this.saveState();
         return;
       }
 
-      const job = this.jobs.get(jobId)!;
+      if (Date.now() - phaseStart > maxWait) {
+        const remaining = Array.from(pending.values()).map(s => ({ jobId: s.jobId }));
+        this.failRemaining(remaining, 0, "Download timed out after 4 hours");
+        this.saveState();
+        return;
+      }
 
+      // Single history-page scan to find all ready cities
+      let readyRefNames: Set<string>;
       try {
-        job.results     = await scraper.downloadBulkJob(refName, keywordCount);
-        job.resultCount = job.results.length;
-        job.status      = "done";
-        job.finishedAt  = Date.now();
-
+        readyRefNames = await scraper.scanReadyJobs(Array.from(pending.keys()));
       } catch (err) {
         if (err instanceof StoppedError) {
-          this.failRemaining(submissions, i, "Download interrupted — click Restart Downloads to retry");
+          const remaining = Array.from(pending.values()).map(s => ({ jobId: s.jobId }));
+          this.failRemaining(remaining, 0, "Download interrupted — click Restart Downloads to retry");
           this.saveState();
           return;
-
-        } else if (err instanceof PauseError) {
-          job.status     = "failed";
-          job.error      = `Download error: ${err.message}`;
-          job.finishedAt = Date.now();
-          this.failRemaining(submissions, i + 1, "Download interrupted — click Restart Downloads to retry");
-          this.stopped     = true;
-          this.pauseReason = err.message;
-          scraper.stop();
-          this.saveState();
-          return;
-
-        } else {
-          job.status     = "failed";
-          job.error      = err instanceof Error ? err.message : String(err);
-          job.finishedAt = Date.now();
         }
+        // Transient scan error — wait 30 s and retry
+        console.warn(`[queue] History scan failed: ${err instanceof Error ? err.message : err} — retrying in 30 s`);
+        await this.interruptibleSleep(30000);
+        continue;
       }
-      if (job.scheduledFor !== undefined) {
-        this.checkScheduledBatch(job.scheduledFor);
+
+      if (readyRefNames.size > 0) {
+        console.log(`[queue] ${readyRefNames.size} / ${pending.size} cities ready — downloading…`);
       }
-      this.saveState();
+
+      let downloadedAny = false;
+
+      for (const refName of readyRefNames) {
+        if (this.stopped) break;
+        const { jobId, keywordCount } = pending.get(refName)!;
+        const job = this.jobs.get(jobId)!;
+
+        try {
+          job.results     = await scraper.downloadBulkJob(refName, keywordCount);
+          job.resultCount = job.results.length;
+          job.status      = "done";
+          job.finishedAt  = Date.now();
+          pending.delete(refName);
+          downloadedAny = true;
+          if (job.scheduledFor !== undefined) this.checkScheduledBatch(job.scheduledFor);
+
+        } catch (err) {
+          if (err instanceof StoppedError) {
+            const remaining = Array.from(pending.values()).map(s => ({ jobId: s.jobId }));
+            this.failRemaining(remaining, 0, "Download interrupted — click Restart Downloads to retry");
+            this.saveState();
+            return;
+
+          } else if (err instanceof PauseError) {
+            job.status     = "failed";
+            job.error      = `Download error: ${err.message}`;
+            job.finishedAt = Date.now();
+            pending.delete(refName);
+            const remaining = Array.from(pending.values()).map(s => ({ jobId: s.jobId }));
+            this.failRemaining(remaining, 0, "Download interrupted — click Restart Downloads to retry");
+            this.stopped     = true;
+            this.pauseReason = err.message;
+            scraper.stop();
+            this.saveState();
+            return;
+
+          } else {
+            job.status     = "failed";
+            job.error      = err instanceof Error ? err.message : String(err);
+            job.finishedAt = Date.now();
+            pending.delete(refName);
+          }
+        }
+        this.saveState();
+      }
+
+      // Nothing was ready this cycle — wait 5 min before scanning again
+      if (!downloadedAny && pending.size > 0) {
+        console.log(`[queue] ${pending.size} cities still processing on D7 — waiting 5 min…`);
+        await this.interruptibleSleep(5 * 60 * 1000);
+      }
     }
   }
 

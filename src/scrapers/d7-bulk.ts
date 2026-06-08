@@ -251,6 +251,27 @@ export class D7BulkScraper implements IScraper {
     }
   }
 
+  // ── Scan history page once, return which refNames have a View button ready ──
+
+  async scanReadyJobs(refNames: string[]): Promise<Set<string>> {
+    const context = await this.getContext();
+    const page    = await context.newPage();
+    const ready   = new Set<string>();
+    try {
+      await page.goto(HISTORY_URL, { waitUntil: "domcontentloaded" });
+      for (const refName of refNames) {
+        this.checkStopped();
+        const locationPart = refName.split(" — ")[0];
+        const row      = page.locator("tr").filter({ hasText: locationPart }).first();
+        const viewLink = row.locator('a[href*="/bulk/view/"], a:has-text("View")').first();
+        if (await viewLink.isVisible().catch(() => false)) ready.add(refName);
+      }
+    } finally {
+      await page.close().catch(() => {});
+    }
+    return ready;
+  }
+
   // ── Core: poll history page, click View when ready, download CSV ───────────
 
   private async doDownload(refName: string, keywordCount: number): Promise<UniversalLead[]> {

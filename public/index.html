@@ -310,6 +310,7 @@ let queueStopped = false;
 let currentPage = 0;
 const PAGE_SIZE = 100;
 let lastResultCount = -1; // track to avoid unnecessary re-renders
+let persistedStats  = JSON.parse(localStorage.getItem('d7bot-lead-stats') || '[]');
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
@@ -511,11 +512,33 @@ async function submitJobs() {
   }
 }
 
+// ── Persist job results to localStorage for history loading after Clear All ───
+async function saveJobResults(id) {
+  try {
+    const job = await api('GET', '/api/jobs/' + id);
+    if (job.results && job.results.length) {
+      try { localStorage.setItem('d7bot-results-' + id, JSON.stringify(job.results)); } catch { /* quota exceeded */ }
+    }
+  } catch { /* job may not exist */ }
+}
+
 // ── Poll jobs ─────────────────────────────────────────────────────────────────
 async function pollJobs() {
   const jobs = await api('GET', '/api/jobs');
   allJobs = jobs;
   renderJobs(jobs);
+
+  // Persist completed job stats to localStorage so Clear All never loses them
+  const seenIds = new Set(persistedStats.map(s => s.id));
+  let statsChanged = false;
+  for (const job of jobs) {
+    if (job.status === 'done' && !seenIds.has(job.id)) {
+      persistedStats.push({ id: job.id, location: job.location, resultCount: job.resultCount, keywords: job.keywords, createdAt: job.createdAt, scraperId: job.scraperId });
+      statsChanged = true;
+      saveJobResults(job.id);
+    }
+  }
+  if (statsChanged) localStorage.setItem('d7bot-lead-stats', JSON.stringify(persistedStats));
 
   // Only re-fetch results when the total done count changes
   const doneCount = jobs.reduce((n, j) => n + (j.status === 'done' ? j.resultCount : 0), 0);
@@ -698,9 +721,11 @@ function closeHistory() {
 }
 
 function renderHistory() {
-  const done = allJobs
-    .filter(j => j.status === 'done' && j.resultCount > 0)
-    .sort((a, b) => b.createdAt - a.createdAt);
+  // Merge live done jobs with persisted history so Clear All never erases old searches
+  const liveIds = new Set(allJobs.filter(j => j.status === 'done').map(j => j.id));
+  const liveEntries = allJobs.filter(j => j.status === 'done' && j.resultCount > 0);
+  const historicalEntries = persistedStats.filter(j => j.resultCount > 0 && !liveIds.has(j.id));
+  const done = [...liveEntries, ...historicalEntries].sort((a, b) => b.createdAt - a.createdAt);
 
   const batches = groupIntoBatches(done);
   const list = document.getElementById('history-list');
@@ -784,8 +809,14 @@ async function loadHistoryBatch(ids, kwLabel, locsLabel) {
     '<tr><td colspan="9" class="empty-results"><span class="spinner"></span>&nbsp; Loading…</td></tr>';
 
   try {
-    const jobs    = await Promise.all(ids.map(id => api('GET', '/api/jobs/' + id)));
-    const results = jobs.flatMap(j => j.results || []);
+    const resultArrays = await Promise.all(ids.map(async id => {
+      // Try localStorage first — works even after Clear All
+      const cached = localStorage.getItem('d7bot-results-' + id);
+      if (cached) { try { return JSON.parse(cached); } catch { /* ignore corrupt cache */ } }
+      // Fall back to server (only works if job still exists)
+      try { const job = await api('GET', '/api/jobs/' + id); return job.results || []; } catch { return []; }
+    }));
+    const results = resultArrays.flat();
     viewingHistory = true;
     allResults     = results;
     currentPage    = 0;
@@ -820,9 +851,7 @@ function closeAllSidebars() {
 }
 
 function renderStats() {
-  const done = allJobs
-    .filter(j => j.status === 'done')
-    .sort((a, b) => a.createdAt - b.createdAt);
+  const done = persistedStats.slice().sort((a, b) => a.createdAt - b.createdAt);
 
   const list = document.getElementById('stats-list');
   const ftr  = document.getElementById('stats-ftr');

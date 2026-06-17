@@ -400,104 +400,59 @@ export class JobQueue {
 
     if (this.stopped) return;
 
-    // ── Phase 2: Opportunistic download — process whichever cities are ready ──
-    // Scan the history page once per cycle; download all cities that have a
-    // View button, skip cities still "Joining Data", wait only when nothing
-    // is ready. This avoids blocking on slow cities while faster ones sit idle.
-
+    // ── Phase 2: Download each city's results sequentially ──────────────────
     console.log(`[queue] All ${submissions.length} searches submitted — now downloading results…`);
 
-    const pending = new Map(submissions.map(s => [s.refName, s]));
-    const maxWait  = 4 * 60 * 60 * 1000; // 4-hour hard timeout
-    const phaseStart = Date.now();
-
-    while (pending.size > 0) {
+    for (let i = 0; i < submissions.length; i++) {
       if (this.stopped) {
-        const remaining = Array.from(pending.values()).map(s => ({ jobId: s.jobId }));
-        this.failRemaining(remaining, 0, "Download interrupted — click Restart Downloads to retry");
-        this.saveState();
+        const requeue = submissions.slice(i).map(s => s.jobId);
+        for (const id of requeue) {
+          const j = this.jobs.get(id);
+          if (j) j.status = "queued";
+        }
+        this.pending.unshift(...requeue);
         return;
       }
 
-      if (Date.now() - phaseStart > maxWait) {
-        const remaining = Array.from(pending.values()).map(s => ({ jobId: s.jobId }));
-        this.failRemaining(remaining, 0, "Download timed out after 4 hours");
-        this.saveState();
-        return;
-      }
+      const { jobId, refName, keywordCount } = submissions[i];
+      const job = this.jobs.get(jobId)!;
 
-      // Single history-page scan to find all ready cities
-      let readyRefNames: Set<string>;
       try {
-        readyRefNames = await scraper.scanReadyJobs(Array.from(pending.keys()));
+        job.results     = await scraper.downloadBulkJob(refName, keywordCount);
+        job.resultCount = job.results.length;
+        job.status      = "done";
+        job.finishedAt  = Date.now();
+        if (job.scheduledFor !== undefined) this.checkScheduledBatch(job.scheduledFor);
+
       } catch (err) {
         if (err instanceof StoppedError) {
-          const remaining = Array.from(pending.values()).map(s => ({ jobId: s.jobId }));
-          this.failRemaining(remaining, 0, "Download interrupted — click Restart Downloads to retry");
+          job.status = "queued";
+          const requeue = [jobId, ...submissions.slice(i + 1).map(s => s.jobId)];
+          for (const id of requeue) {
+            const j = this.jobs.get(id);
+            if (j) j.status = "queued";
+          }
+          this.pending.unshift(...requeue);
+          return;
+
+        } else if (err instanceof PauseError) {
+          job.status     = "failed";
+          job.error      = `Download error: ${err.message}`;
+          job.finishedAt = Date.now();
+          this.failRemaining(submissions, i + 1, "Download interrupted — click Restart Downloads to retry");
+          this.stopped     = true;
+          this.pauseReason = err.message;
+          scraper.stop();
           this.saveState();
           return;
+
+        } else {
+          job.status     = "failed";
+          job.error      = err instanceof Error ? err.message : String(err);
+          job.finishedAt = Date.now();
         }
-        // Transient scan error — wait 30 s and retry
-        console.warn(`[queue] History scan failed: ${err instanceof Error ? err.message : err} — retrying in 30 s`);
-        await this.interruptibleSleep(30000);
-        continue;
       }
-
-      if (readyRefNames.size > 0) {
-        console.log(`[queue] ${readyRefNames.size} / ${pending.size} cities ready — downloading…`);
-      }
-
-      let downloadedAny = false;
-
-      for (const refName of readyRefNames) {
-        if (this.stopped) break;
-        const { jobId, keywordCount } = pending.get(refName)!;
-        const job = this.jobs.get(jobId)!;
-
-        try {
-          job.results     = await scraper.downloadBulkJob(refName, keywordCount);
-          job.resultCount = job.results.length;
-          job.status      = "done";
-          job.finishedAt  = Date.now();
-          pending.delete(refName);
-          downloadedAny = true;
-          if (job.scheduledFor !== undefined) this.checkScheduledBatch(job.scheduledFor);
-
-        } catch (err) {
-          if (err instanceof StoppedError) {
-            const remaining = Array.from(pending.values()).map(s => ({ jobId: s.jobId }));
-            this.failRemaining(remaining, 0, "Download interrupted — click Restart Downloads to retry");
-            this.saveState();
-            return;
-
-          } else if (err instanceof PauseError) {
-            job.status     = "failed";
-            job.error      = `Download error: ${err.message}`;
-            job.finishedAt = Date.now();
-            pending.delete(refName);
-            const remaining = Array.from(pending.values()).map(s => ({ jobId: s.jobId }));
-            this.failRemaining(remaining, 0, "Download interrupted — click Restart Downloads to retry");
-            this.stopped     = true;
-            this.pauseReason = err.message;
-            scraper.stop();
-            this.saveState();
-            return;
-
-          } else {
-            job.status     = "failed";
-            job.error      = err instanceof Error ? err.message : String(err);
-            job.finishedAt = Date.now();
-            pending.delete(refName);
-          }
-        }
-        this.saveState();
-      }
-
-      // Nothing was ready this cycle — wait 5 min before scanning again
-      if (!downloadedAny && pending.size > 0) {
-        console.log(`[queue] ${pending.size} cities still processing on D7 — waiting 5 min…`);
-        await this.interruptibleSleep(5 * 60 * 1000);
-      }
+      this.saveState();
     }
   }
 
@@ -520,7 +475,7 @@ export class JobQueue {
     let count = 0;
     for (const job of this.jobs.values()) {
       if (job.scraperId !== "d7-bulk" || !job.bulkRefName) continue;
-      if (job.status === "running" || job.status === "failed") {
+      if (job.status === "failed") {
         job.status     = "queued";
         job.error      = undefined;
         job.finishedAt = undefined;

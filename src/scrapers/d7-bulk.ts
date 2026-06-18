@@ -356,18 +356,15 @@ export class D7BulkScraper implements IScraper {
 
     const searchField = page.locator(".select2-search__field, .select2-search input").first();
     await searchField.fill(location);
-    await page.waitForTimeout(1500);
+    // Brief pause so Select2 can initiate its AJAX request
+    await page.waitForTimeout(500);
 
-    const noResults   = page.locator(".select2-results__option--disabled, .select2-results__message");
+    // Wait up to 6 s for a real (non-disabled) option to appear.
+    // Select2 shows a disabled "Searching…" item while loading — skipping
+    // disabled options means we don't mistake that interim state for "no results".
     const firstOption = page.locator(".select2-results__option:not(.select2-results__option--disabled)").first();
-
-    await Promise.race([
-      firstOption.waitFor({ timeout: 6000 }),
-      noResults.waitFor({ timeout: 6000 }),
-    ]).catch(() => { throw new LocationNotFoundError(location); });
-
-    const hasOption = await firstOption.isVisible().catch(() => false);
-    if (!hasOption) throw new LocationNotFoundError(location);
+    const found = await firstOption.waitFor({ state: "visible", timeout: 6000 }).then(() => true).catch(() => false);
+    if (!found) throw new LocationNotFoundError(location);
 
     await firstOption.click();
     await page.waitForTimeout(400);

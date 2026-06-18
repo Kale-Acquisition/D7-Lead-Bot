@@ -228,8 +228,10 @@ export class D7BulkScraper implements IScraper {
       await panel.locator('button:has-text("Fetch Leads")').click();
       console.log(`[d7-bulk] Submitted "${refName}", waiting for D7 to redirect…`);
 
-      // D7 redirects to /history/, /bulk/view/, or /bulk/process/multi_keyword.php
-      // (the last one means the city wasn't found — fail fast, don't retry)
+      // D7 redirects to /history/ or /bulk/view/ on success, or /bulk/process/
+      // when the city has no data. However some cities pass through /bulk/process/
+      // briefly before continuing to /history/, so we wait an extra 6 s before
+      // treating it as a definitive "not found".
       await page.waitForURL(
         (url) => {
           const s = url.toString();
@@ -238,9 +240,21 @@ export class D7BulkScraper implements IScraper {
         { timeout: 180000 }
       );
 
-      const finalUrl = page.url();
+      let finalUrl = page.url();
       if (finalUrl.includes("/bulk/process/")) {
-        throw new LocationNotFoundError(location);
+        // Give D7 a few seconds to continue redirecting before giving up
+        await page.waitForURL(
+          (url) => {
+            const s = url.toString();
+            return s.includes("/bulk/view/") || s.includes("/history/");
+          },
+          { timeout: 6000 }
+        ).catch(() => {});
+        finalUrl = page.url();
+        if (!finalUrl.includes("/bulk/view/") && !finalUrl.includes("/history/")) {
+          throw new LocationNotFoundError(location);
+        }
+        console.log(`[d7-bulk] "${refName}" passed through /bulk/process/ → ${finalUrl}`);
       }
 
       console.log(`[d7-bulk] Redirect confirmed → ${finalUrl}`);

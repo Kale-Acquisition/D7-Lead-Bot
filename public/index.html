@@ -147,8 +147,9 @@
     .stats-sidebar { position: absolute; top: 0; right: 0; bottom: 0; width: 300px; background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; transform: translateX(100%); transition: transform .25s cubic-bezier(.4,0,.2,1); z-index: 10; }
     .stats-sidebar.open { transform: translateX(0); }
     .stats-list { flex: 1; overflow-y: auto; padding: 10px; }
-    .stats-batch-hdr { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); padding: 10px 6px 5px; border-bottom: 1px solid var(--border); margin-bottom: 3px; }
-    .stats-batch-hdr span { color: var(--green); text-transform: none; font-size: 12px; }
+    .stats-date-hdr { display: flex; align-items: center; justify-content: space-between; padding: 10px 8px 5px; border-bottom: 1px solid var(--border); margin-bottom: 3px; margin-top: 4px; }
+    .stats-date-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+    .stats-date-total { font-size: 12px; font-weight: 700; color: var(--green); }
     .stats-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-radius: 6px; font-size: 13px; }
     .stats-row:hover { background: var(--surface2); }
     .stats-city { color: var(--text); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -851,30 +852,44 @@ function closeAllSidebars() {
 }
 
 function renderStats() {
-  const done = persistedStats.slice().sort((a, b) => a.createdAt - b.createdAt);
-
   const list = document.getElementById('stats-list');
   const ftr  = document.getElementById('stats-ftr');
 
-  if (!done.length) {
+  if (!persistedStats.length) {
     list.innerHTML = '<div style="color:var(--muted);font-size:13px;text-align:center;padding:32px 0">No completed downloads yet.</div>';
     ftr.innerHTML  = '';
     return;
   }
 
-  // Reuse batch grouping from history (pass chronological order, then reverse batches newest-first)
-  const batches = groupIntoBatches(done.slice().sort((a, b) => b.createdAt - a.createdAt));
+  // Group jobs by calendar date (newest date first)
+  const byDate = new Map(); // dateString key -> { label, ts, jobs[] }
+  for (const job of persistedStats) {
+    const d   = new Date(job.createdAt);
+    const key = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+    if (!byDate.has(key)) byDate.set(key, { label: getDateLabel(job.createdAt), ts: job.createdAt, jobs: [] });
+    byDate.get(key).jobs.push(job);
+  }
+  // Sort date groups newest first
+  const dateGroups = Array.from(byDate.values()).sort((a, b) => b.ts - a.ts);
 
   let html = '';
   let grandTotal = 0;
 
-  for (const batch of batches) {
-    const batchTotal = batch.reduce((n, j) => n + j.resultCount, 0);
-    grandTotal += batchTotal;
-    const dateStr = formatOrdinalDate(new Date(batch[0].createdAt));
-    const kwLabel = batch[0].keywords.join(' · ');
-    html += `<div class="stats-batch-hdr" title="${esc(kwLabel)}">${esc(kwLabel)} &middot; ${esc(dateStr)} &mdash; <span>${batchTotal.toLocaleString()} leads</span></div>`;
-    for (const job of batch) {
+  for (const group of dateGroups) {
+    const dayTotal = group.jobs.reduce((n, j) => n + j.resultCount, 0);
+    grandTotal += dayTotal;
+    const dateStr = group.label === 'Today' || group.label === 'Yesterday'
+      ? group.label
+      : formatOrdinalDate(new Date(group.ts));
+
+    html += `<div class="stats-date-hdr">
+      <span class="stats-date-label">${esc(dateStr)}</span>
+      <span class="stats-date-total">${dayTotal.toLocaleString()} leads</span>
+    </div>`;
+
+    // Sort cities within the day newest first
+    const sorted = group.jobs.slice().sort((a, b) => b.createdAt - a.createdAt);
+    for (const job of sorted) {
       html += `<div class="stats-row">
         <span class="stats-city" title="${esc(job.location)}">${esc(job.location)}</span>
         <span class="stats-count">${job.resultCount.toLocaleString()}</span>

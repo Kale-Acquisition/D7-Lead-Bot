@@ -307,6 +307,9 @@ export class D7BulkScraper implements IScraper {
         // D7 reformats our refName in the history list (e.g. drops the dash,
         // uppercases the month), so match by the location part only.
         await page.goto(HISTORY_URL, { waitUntil: "domcontentloaded" });
+        // Wait for D7's JS to render the history table rows before checking
+        await page.waitForSelector("tr", { timeout: 15000 }).catch(() => {});
+        await page.waitForTimeout(2000);
 
         const locationPart = refName.split(" — ")[0]; // e.g. "Bluffton, SC"
         const row      = page.locator("tr").filter({ hasText: locationPart }).first();

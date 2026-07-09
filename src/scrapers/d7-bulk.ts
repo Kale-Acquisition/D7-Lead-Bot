@@ -316,16 +316,25 @@ export class D7BulkScraper implements IScraper {
         const viewLink = row.locator('a[href*="/bulk/view/"], a:has-text("View")').first();
 
         if (await viewLink.isVisible().catch(() => false)) {
-          // Extract href and navigate directly (avoids new-tab issues)
+          // Try href first; if missing/invalid, click directly and wait for navigation
           const href = await viewLink.getAttribute("href").catch(() => null);
-          if (!href) throw new Error(`No href on View link for "${refName}"`);
+          console.log(`[d7-bulk] "${refName}" View button found, href="${href}"`);
 
-          const viewUrl = href.startsWith("http")
-            ? href
-            : `https://dash.d7leadfinder.com${href}`;
-
-          console.log(`[d7-bulk] "${refName}" ready → ${viewUrl}`);
-          await page.goto(viewUrl, { waitUntil: "domcontentloaded" });
+          if (href && href.includes("/bulk/view/")) {
+            const viewUrl = href.startsWith("http")
+              ? href
+              : `https://dash.d7leadfinder.com${href}`;
+            console.log(`[d7-bulk] Navigating to ${viewUrl}`);
+            await page.goto(viewUrl, { waitUntil: "domcontentloaded" });
+          } else {
+            // href is null, "#", or JS — click and let D7 navigate
+            console.log(`[d7-bulk] Clicking View button directly for "${refName}"`);
+            await Promise.all([
+              page.waitForURL(url => url.toString().includes("/bulk/view/"), { timeout: 30000 }),
+              viewLink.click(),
+            ]);
+          }
+          console.log(`[d7-bulk] On view page: ${page.url()}`);
 
           // Safety wait: ensure all keyword rows are fully rendered before downloading
           await this.waitForViewPage(page, keywordCount);

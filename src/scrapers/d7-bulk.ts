@@ -13,6 +13,13 @@ class LocationNotFoundError extends Error {
   constructor(location: string) { super(`Location not found in D7: "${location}"`); }
 }
 
+// D7 strips diacritics entirely (e.g. ñ → dropped, not replaced with n).
+// NFD normalization splits a char like ñ into base letter + combining tilde;
+// removing the combining range then matches D7's output exactly.
+function stripDiacritics(str: string): string {
+  return str.normalize("NFD").replace(/[̀-ͯ]/gu, "");
+}
+
 export class D7BulkScraper implements IScraper {
   readonly id   = "d7-bulk";
   readonly name = "D7 Bulk Search (Browser)";
@@ -275,7 +282,7 @@ export class D7BulkScraper implements IScraper {
       await page.goto(HISTORY_URL, { waitUntil: "domcontentloaded" });
       for (const refName of refNames) {
         this.checkStopped();
-        const locationPart = refName.split(" — ")[0];
+        const locationPart = stripDiacritics(refName.split(" — ")[0].split(",")[0].trim());
         const row      = page.locator("tr").filter({ hasText: locationPart }).first();
         const viewLink = row.locator('a[href*="/bulk/view/"], a:has-text("View")').first();
         if (await viewLink.isVisible().catch(() => false)) ready.add(refName);
@@ -311,7 +318,9 @@ export class D7BulkScraper implements IScraper {
         await page.waitForSelector("tr", { timeout: 15000 }).catch(() => {});
         await page.waitForTimeout(2000);
 
-        const locationPart = refName.split(" — ")[0]; // e.g. "Bluffton, SC"
+        // D7 formats the city as "CityName,st" (no space, lowercase state),
+        // so match only on the city name (before the comma) to avoid mismatch.
+        const locationPart = stripDiacritics(refName.split(" — ")[0].split(",")[0].trim());
         const row      = page.locator("tr").filter({ hasText: locationPart }).first();
         const viewLink = row.locator('a[href*="/bulk/view/"], a:has-text("View")').first();
 
